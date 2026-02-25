@@ -57,7 +57,7 @@
         <InfoTab />
     </div>
     <div class="tab-content" class:active={activeTab === 'settings' && !collapsed} id="tab-settings">
-        <SettingsTab />
+        <SettingsTab {emulator} />
     </div>
     <div class="tab-content" class:active={activeTab === 'tools' && !collapsed} id="tab-tools">
         <ToolsTab />

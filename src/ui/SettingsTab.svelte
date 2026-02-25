@@ -1,6 +1,10 @@
 <script lang="ts">
-    type Subtab = 'display' | 'input' | 'media' | 'audio' | 'machines';
+    import type { EmulatorController } from '../core/emulator-controller';
+    import { MACHINE_PROFILES, DEFAULT_VISIBLE_MACHINES, getMachineTypes } from '../machines/profiles';
 
+    let { emulator }: { emulator: EmulatorController } = $props();
+
+    type Subtab = 'display' | 'input' | 'media' | 'audio' | 'machines';
     let activeSubtab: Subtab = $state('display');
 
     const subtabs: { id: Subtab; label: string }[] = [
@@ -11,8 +15,249 @@
         { id: 'machines', label: 'Machines' },
     ];
 
-    function selectSubtab(id: Subtab) {
-        activeSubtab = id;
+    // ---- Display state ----
+    let currentZoom = $state(1);
+    let overlayMode = $state('normal');
+    let invertDisplay = $state(localStorage.getItem('zxm8_invert') === 'true');
+    let lateTimings = $state(localStorage.getItem('zxm8_lateTiming') === 'true');
+
+    // ---- Input state ----
+    let kempstonEnabled = $state(false);
+    let kempstonExtended = $state(false);
+    let gamepadEnabled = $state(false);
+    let kempstonMouse = $state(false);
+    let mouseWheel = $state(false);
+    let betaDisk = $state(localStorage.getItem('zx-beta-disk') === 'true');
+
+    // ---- Media state ----
+    let flashLoad = $state(true);
+    let tapeAudio = $state(true);
+
+    // ---- Audio state ----
+    let soundEnabled = $state(localStorage.getItem('zx-sound-enabled') !== 'false');
+    let ay48k = $state(localStorage.getItem('zx-ay-48k') === 'true');
+    let volume = $state(parseInt(localStorage.getItem('zx-volume') || '50'));
+    let stereoMode = $state(localStorage.getItem('zx-stereo-mode') || 'abc');
+
+    // ---- Machines state ----
+    let visibleMachines = $state(getVisibleMachines());
+
+    function getVisibleMachines(): string[] {
+        try {
+            const stored = localStorage.getItem('zx-visible-machines');
+            if (stored) {
+                const arr = JSON.parse(stored);
+                if (!arr.includes('48k')) arr.unshift('48k');
+                return arr;
+            }
+        } catch {}
+        return DEFAULT_VISIBLE_MACHINES.slice();
+    }
+
+    function setVisibleMachines(arr: string[]) {
+        visibleMachines = arr;
+        localStorage.setItem('zx-visible-machines', JSON.stringify(arr));
+    }
+
+    // Group machines by group for the checkboxes
+    function getMachineGroups(): Record<string, { id: string; name: string }[]> {
+        const groups: Record<string, { id: string; name: string }[]> = {};
+        for (const [id, p] of Object.entries(MACHINE_PROFILES)) {
+            (groups[p.group] ||= []).push({ id, name: p.name });
+        }
+        return groups;
+    }
+
+    const machineGroups = getMachineGroups();
+
+    // ---- Display handlers ----
+
+    function updateCanvasSize() {
+        if (document.fullscreenElement) return;
+        const s = emulator.spectrum;
+        const dims = s.ula.getDimensions();
+        const canvas = document.getElementById('screen') as HTMLCanvasElement;
+        const overlay = document.getElementById('overlayCanvas') as HTMLCanvasElement;
+        if (!canvas || !overlay) return;
+
+        canvas.width = dims.width;
+        canvas.height = dims.height;
+        canvas.style.width = (dims.width * currentZoom) + 'px';
+        canvas.style.height = (dims.height * currentZoom) + 'px';
+        overlay.width = dims.width * currentZoom;
+        overlay.height = dims.height * currentZoom;
+        overlay.style.width = (dims.width * currentZoom) + 'px';
+        overlay.style.height = (dims.height * currentZoom) + 'px';
+        emulator.setZoom(currentZoom);
+    }
+
+    function changeBorder(e: Event) {
+        const value = (e.target as HTMLSelectElement).value;
+        const s = emulator.spectrum;
+        if (s.ula.setBorderPreset(value)) {
+            s.updateDisplayDimensions();
+            updateCanvasSize();
+            emulator.redraw();
+        }
+    }
+
+    function changeOverlay(e: Event) {
+        overlayMode = (e.target as HTMLSelectElement).value;
+        emulator.setOverlayMode(overlayMode);
+        emulator.redraw();
+    }
+
+    function setZoom(level: number) {
+        currentZoom = level;
+        updateCanvasSize();
+        emulator.renderToScreen();
+    }
+
+    function toggleInvert() {
+        invertDisplay = !invertDisplay;
+        const canvas = document.getElementById('screen') as HTMLCanvasElement;
+        const overlay = document.getElementById('overlayCanvas') as HTMLCanvasElement;
+        const filter = invertDisplay ? 'invert(1)' : '';
+        if (canvas) canvas.style.filter = filter;
+        if (overlay) overlay.style.filter = filter;
+        localStorage.setItem('zxm8_invert', String(invertDisplay));
+    }
+
+    function toggleLateTimings() {
+        lateTimings = !lateTimings;
+        emulator.setLateTimings(lateTimings);
+        localStorage.setItem('zxm8_lateTiming', String(lateTimings));
+    }
+
+    // ---- Input handlers ----
+
+    function toggleKempston() {
+        kempstonEnabled = !kempstonEnabled;
+        emulator.kempstonEnabled = kempstonEnabled;
+    }
+
+    function toggleKempstonExtended() {
+        kempstonExtended = !kempstonExtended;
+        emulator.kempstonExtendedEnabled = kempstonExtended;
+    }
+
+    function toggleGamepad() {
+        gamepadEnabled = !gamepadEnabled;
+        emulator.gamepadEnabled = gamepadEnabled;
+        if (gamepadEnabled) {
+            kempstonEnabled = true;
+            emulator.kempstonEnabled = true;
+        }
+    }
+
+    function toggleKempstonMouse() {
+        kempstonMouse = !kempstonMouse;
+        emulator.kempstonMouseEnabled = kempstonMouse;
+        if (!kempstonMouse && document.pointerLockElement) {
+            document.exitPointerLock();
+        }
+    }
+
+    function toggleMouseWheel() {
+        mouseWheel = !mouseWheel;
+        // Mouse wheel is handled by the mouse event forwarding
+    }
+
+    function toggleBetaDisk() {
+        betaDisk = !betaDisk;
+        const s = emulator.spectrum;
+        s.betaDiskEnabled = betaDisk;
+        localStorage.setItem('zx-beta-disk', String(betaDisk));
+        if (betaDisk && !s.memory.hasTrdosRom?.()) {
+            // TR-DOS ROM loading handled by rom-loader during boot
+        }
+        s.updateBetaDiskPagingFlag();
+    }
+
+    // ---- Media handlers ----
+
+    function toggleFlashLoad() {
+        flashLoad = !flashLoad;
+        emulator.setTapeFlashLoad(flashLoad);
+        if (flashLoad) emulator.stopTape();
+    }
+
+    function toggleTapeAudio() {
+        tapeAudio = !tapeAudio;
+        emulator.spectrum.tapeAudioEnabled = tapeAudio;
+    }
+
+    function tapePlay() {
+        if (emulator.getTapeFlashLoad()) return;
+        emulator.playTape();
+    }
+
+    function tapeStop() {
+        emulator.stopTape();
+    }
+
+    function tapeRewind() {
+        emulator.rewindTape();
+    }
+
+    // ---- Audio handlers ----
+
+    async function toggleSoundEnabled() {
+        soundEnabled = !soundEnabled;
+        if (soundEnabled) {
+            const audio = emulator.initAudio();
+            await audio.start();
+            audio.setMuted(false);
+        } else {
+            const audio = emulator.getAudio();
+            if (audio) audio.setMuted(true);
+        }
+        localStorage.setItem('zx-sound-enabled', String(soundEnabled));
+    }
+
+    function toggleAY48k() {
+        ay48k = !ay48k;
+        emulator.spectrum.ay48kEnabled = ay48k;
+        localStorage.setItem('zx-ay-48k', String(ay48k));
+    }
+
+    function changeVolume(e: Event) {
+        volume = parseInt((e.target as HTMLInputElement).value);
+        const audio = emulator.getAudio();
+        if (audio) audio.setVolume(volume / 100);
+        localStorage.setItem('zx-volume', String(volume));
+    }
+
+    function changeStereo(e: Event) {
+        stereoMode = (e.target as HTMLSelectElement).value;
+        const s = emulator.spectrum;
+        s.ay.stereoMode = stereoMode;
+        s.ay.updateStereoPanning();
+        localStorage.setItem('zx-stereo-mode', stereoMode);
+    }
+
+    // ---- Machine visibility handlers ----
+
+    function toggleMachineVisibility(id: string, checked: boolean) {
+        const current = getVisibleMachines();
+        if (checked) {
+            if (!current.includes(id)) {
+                const allIds = getMachineTypes();
+                const idx = allIds.indexOf(id);
+                let insertAt = current.length;
+                for (let i = 0; i < current.length; i++) {
+                    if (allIds.indexOf(current[i]) > idx) {
+                        insertAt = i;
+                        break;
+                    }
+                }
+                current.splice(insertAt, 0, id);
+            }
+        } else {
+            const idx = current.indexOf(id);
+            if (idx > -1) current.splice(idx, 1);
+        }
+        setVisibleMachines(current);
     }
 </script>
 
@@ -22,8 +267,7 @@
             <button
                 class="settings-subtab-btn"
                 class:active={activeSubtab === subtab.id}
-                data-settingstab={subtab.id}
-                onclick={() => selectSubtab(subtab.id)}
+                onclick={() => activeSubtab = subtab.id}
             >
                 {subtab.label}
             </button>
@@ -31,11 +275,11 @@
     </div>
 
     <!-- Display Sub-tab -->
-    <div class="settings-subtab-content" class:active={activeSubtab === 'display'} id="settings-display">
+    <div class="settings-subtab-content" class:active={activeSubtab === 'display'}>
     <div class="settings-tab-content">
         <div class="settings-section">
             <div class="settings-row">
-                <select id="borderSizeSelect" title="Border size preset">
+                <select title="Border size preset" onchange={changeBorder}>
                     <option value="full" selected>Full border (352x312)</option>
                     <option value="normal">Normal (320x240)</option>
                     <option value="thick">Thick (352x288)</option>
@@ -44,9 +288,9 @@
                     <option value="none">None (256x192)</option>
                 </select>
                 <label class="checkbox-label" title="Invert screen colors" style="margin-left: 15px;">
-                    <input type="checkbox" id="chkInvertDisplay"> Invert
+                    <input type="checkbox" checked={invertDisplay} onchange={toggleInvert}> Invert
                 </label>
-                <select id="overlaySelect" style="margin-left: 15px;" title="Overlay display mode">
+                <select style="margin-left: 15px;" title="Overlay display mode" onchange={changeOverlay}>
                     <option value="normal" selected>Normal</option>
                     <option value="grid">Grid</option>
                     <option value="box">Box</option>
@@ -59,217 +303,136 @@
                 </select>
                 <span class="zoom-group" style="margin-left: 15px;">
                     Zoom:
-                    <button id="zoom1" class="zoom-btn active" title="Zoom 1x">x1</button>
-                    <button id="zoom2" class="zoom-btn" title="Zoom 2x">x2</button>
-                    <button id="zoom3" class="zoom-btn" title="Zoom 3x">x3</button>
+                    <button class="zoom-btn" class:active={currentZoom === 1} title="Zoom 1x" onclick={() => setZoom(1)}>x1</button>
+                    <button class="zoom-btn" class:active={currentZoom === 2} title="Zoom 2x" onclick={() => setZoom(2)}>x2</button>
+                    <button class="zoom-btn" class:active={currentZoom === 3} title="Zoom 3x" onclick={() => setZoom(3)}>x3</button>
                 </span>
-                <label class="checkbox-label" title="Late ULA timing (warm ULA behavior, +1 T-state shift). Real ULAs drift from early to late as they warm up." style="margin-left: 5px; white-space: nowrap;">
-                    <input type="checkbox" id="chkLateTimings"> Late Timings
+                <label class="checkbox-label" title="Late ULA timing (warm ULA behavior, +1 T-state shift)" style="margin-left: 5px; white-space: nowrap;">
+                    <input type="checkbox" checked={lateTimings} onchange={toggleLateTimings}> Late Timings
                 </label>
             </div>
             <div class="settings-row">
-                <label for="paletteSelect">Color Palette:</label>
-                <select id="paletteSelect">
-                    <option value="default">Default</option>
+                <label>Fullscreen:</label>
+                <select title="Fullscreen aspect ratio mode">
+                    <option value="crisp" selected>Crisp (integer scale)</option>
+                    <option value="fit">Fit (keep aspect ratio)</option>
+                    <option value="stretch">Stretch (fill screen)</option>
                 </select>
-                <span style="margin-left: 15px;">
-                    <label for="fullscreenMode">Fullscreen:</label>
-                    <select id="fullscreenMode" title="Fullscreen aspect ratio mode">
-                        <option value="crisp" selected>Crisp (integer scale)</option>
-                        <option value="fit">Fit (keep aspect ratio)</option>
-                        <option value="stretch">Stretch (fill screen)</option>
-                    </select>
-                </span>
-            </div>
-            <div class="palette-preview" id="palettePreview">
-                <div class="palette-row">
-                    <span class="palette-row-label">Normal</span>
-                    <span class="palette-color" data-index="0"></span>
-                    <span class="palette-color" data-index="1"></span>
-                    <span class="palette-color" data-index="2"></span>
-                    <span class="palette-color" data-index="3"></span>
-                    <span class="palette-color" data-index="4"></span>
-                    <span class="palette-color" data-index="5"></span>
-                    <span class="palette-color" data-index="6"></span>
-                    <span class="palette-color" data-index="7"></span>
-                </div>
-                <div class="palette-row">
-                    <span class="palette-row-label">Bright</span>
-                    <span class="palette-color" data-index="0" data-bright="true"></span>
-                    <span class="palette-color" data-index="1" data-bright="true"></span>
-                    <span class="palette-color" data-index="2" data-bright="true"></span>
-                    <span class="palette-color" data-index="3" data-bright="true"></span>
-                    <span class="palette-color" data-index="4" data-bright="true"></span>
-                    <span class="palette-color" data-index="5" data-bright="true"></span>
-                    <span class="palette-color" data-index="6" data-bright="true"></span>
-                    <span class="palette-color" data-index="7" data-bright="true"></span>
-                </div>
-            </div>
-            <div class="settings-row" style="margin-top: 10px;">
-                <label class="checkbox-label" title="Enable ULAplus extended palette support (64 colors)">
-                    <input type="checkbox" id="chkULAplus"> ULA+
-                </label>
-                <button id="btnResetULAplus" style="margin-left: 10px; padding: 2px 8px; font-size: 11px;" title="Reset ULAplus palette to defaults">Reset</button>
-                <span id="ulaplusStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
-            </div>
-            <div class="ulaplus-palette-preview hidden" id="ulaplusPalettePreview">
-                <div style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">ULA+ Palette (4 CLUTs x 16 colors)</div>
-                <div class="ulaplus-palette-grid" id="ulaplusPaletteGrid"></div>
             </div>
         </div>
     </div>
-    </div><!-- settings-display -->
+    </div>
 
     <!-- Input Sub-tab -->
-    <div class="settings-subtab-content" class:active={activeSubtab === 'input'} id="settings-input">
+    <div class="settings-subtab-content" class:active={activeSubtab === 'input'}>
     <div class="settings-tab-content">
         <div class="settings-section">
             <div class="settings-row">
                 <label class="checkbox-label">
-                    <input type="checkbox" id="chkKempston"> Kempston Joystick (Numpad)
+                    <input type="checkbox" checked={kempstonEnabled} onchange={toggleKempston}> Kempston Joystick (Numpad)
                 </label>
                 <label class="checkbox-label" title="Extended buttons: [ = C, ] = A, \ = Start" style="margin-left: 15px;">
-                    <input type="checkbox" id="chkKempstonExtended"> Extended
+                    <input type="checkbox" checked={kempstonExtended} onchange={toggleKempstonExtended}> Extended
                 </label>
                 <label class="checkbox-label" title="Use USB/Bluetooth gamepad for Kempston joystick" style="margin-left: 15px;">
-                    <input type="checkbox" id="chkGamepad"> Gamepad
+                    <input type="checkbox" checked={gamepadEnabled} onchange={toggleGamepad}> Gamepad
                 </label>
-                <button id="btnCalibrateGamepad" class="small-btn" style="margin-left: 5px; padding: 2px 6px; font-size: 11px;" title="Configure gamepad mapping">Calibrate</button>
-                <span id="gamepadStatus" style="margin-left: 5px; color: var(--text-dim); font-size: 11px;"></span>
             </div>
             <div class="settings-row">
                 <label class="checkbox-label" title="Click screen to capture mouse, Escape to release">
-                    <input type="checkbox" id="chkKempstonMouse"> Kempston Mouse
+                    <input type="checkbox" checked={kempstonMouse} onchange={toggleKempstonMouse}> Kempston Mouse
                 </label>
                 <label class="checkbox-label" title="Mouse wheel on bits 7:4 of button port" style="margin-left: 15px;">
-                    <input type="checkbox" id="chkMouseWheel"> Wheel
+                    <input type="checkbox" checked={mouseWheel} onchange={toggleMouseWheel}> Wheel
                 </label>
-                <span id="mouseStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
             </div>
             <div class="settings-row">
-                <label class="checkbox-label" title="Enable Beta Disk interface for TR-DOS (requires trdos.rom). Always enabled for Pentagon.">
-                    <input type="checkbox" id="chkBetaDisk"> Beta Disk (TR-DOS)
+                <label class="checkbox-label" title="Enable Beta Disk interface for TR-DOS (requires trdos.rom)">
+                    <input type="checkbox" checked={betaDisk} onchange={toggleBetaDisk}> Beta Disk (TR-DOS)
                 </label>
-                <span id="betaDiskStatus" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;"></span>
             </div>
         </div>
     </div>
-    </div><!-- settings-input -->
+    </div>
 
     <!-- Media Sub-tab -->
-    <div class="settings-subtab-content" class:active={activeSubtab === 'media'} id="settings-media">
+    <div class="settings-subtab-content" class:active={activeSubtab === 'media'}>
     <div class="settings-tab-content">
         <div class="settings-section">
             <div class="settings-row">
-                <button id="btnOpenRomDialog" class="control-btn" title="Open ROM selection dialog to load or replace ROM files">ROMs...</button>
-            </div>
-            <div class="settings-row">
-                <label style="min-width: 80px;">Last File:</label>
-                <span id="lastLoadedFile" style="color: var(--cyan); font-size: 11px;">—</span>
-            </div>
-            <div class="settings-row">
-                <label class="checkbox-label" title="Flash load = instant (trap), unchecked = real-time with border stripes and sound">
-                    <input type="checkbox" id="chkFlashLoad" checked> Flash Load
+                <label class="checkbox-label" title="Flash load = instant (trap), unchecked = real-time with border stripes">
+                    <input type="checkbox" checked={flashLoad} onchange={toggleFlashLoad}> Flash Load
                 </label>
-                <span id="tapeLoadMode" style="margin-left: 10px; color: var(--text-dim); font-size: 11px;">(instant)</span>
+                <span style="margin-left: 10px; color: var(--text-dim); font-size: 11px;">{flashLoad ? '(instant)' : '(real-time)'}</span>
                 <label class="checkbox-label" title="Enable tape loading sounds (real-time mode)" style="margin-left: 15px;">
-                    <input type="checkbox" id="chkTapeAudio" checked> Tape Sound
-                </label>
-                <label class="checkbox-label" title="Automatically type LOAD &quot;&quot; for tape files, boot TR-DOS for disk images" style="margin-left: 15px;">
-                    <input type="checkbox" id="chkAutoLoad" checked> Auto Load
+                    <input type="checkbox" checked={tapeAudio} onchange={toggleTapeAudio}> Tape Sound
                 </label>
             </div>
             <div class="settings-row">
-                <button id="btnTapePlay" class="control-btn" title="Play tape (real-time mode)">&#9654; Play</button>
-                <button id="btnTapeStop" class="control-btn" title="Stop tape playback" style="margin-left: 5px;">&#9209; Stop</button>
-                <button id="btnTapeRewind" class="control-btn" title="Rewind tape to beginning" style="margin-left: 5px;">&#9194; Rewind</button>
-                <span id="tapePosition" style="margin-left: 10px; color: var(--cyan); font-size: 11px;"></span>
-            </div>
-            <div class="settings-row">
-                <button id="btnBlankDisk" class="control-btn" title="Insert blank formatted disk">&#128190; Blank Disk</button>
-            </div>
-            <div class="settings-row" style="margin-top: 10px;">
-                <label for="bootTrdMode" style="min-width: 80px;">Boot File:</label>
-                <select id="bootTrdMode" style="width: 120px;" title="How to handle boot file when loading TRD images">
-                    <option value="none">No change</option>
-                    <option value="add">Add boot</option>
-                    <option value="replace">Replace boot</option>
-                </select>
-                <button id="btnSelectBootTrd" class="control-btn" style="margin-left: 10px;" title="Select TRD or Hobeta file containing boot file">Select...</button>
-                <input type="file" id="bootTrdFile" accept=".trd,.$c,.$b,.$d,.$#,.hobeta" style="display: none;">
-            </div>
-            <div class="settings-row">
-                <span id="bootTrdName" style="color: var(--text-dim); font-size: 11px; margin-left: 80px;">No boot file selected</span>
-            </div>
-            <div class="settings-row" id="driveSelector" style="display: none;">
-                <label>Target drive:</label>
-                <select id="driveSelectorSelect" style="margin-left: 4px; font-size: 11px;">
-                    <option value="0">A:</option>
-                    <option value="1">B:</option>
-                    <option value="2">C:</option>
-                    <option value="3">D:</option>
-                </select>
-            </div>
-            <div id="mediaCatalogContainer" style="display: none; margin-top: 6px;">
-                <div class="media-catalog-bar" id="mediaCatalogBar">
-                    <button class="media-catalog-btn" id="mediaCatalogTapeBtn" data-catalog="tape" style="display: none;">Tape</button>
-                    <button class="media-catalog-btn" id="mediaCatalogDiskBtn" data-catalog="disk" style="display: none;">Disk</button>
-                    <span id="diskDriveTabs" style="display: none; margin-left: 4px;">
-                        <!-- Drive tabs are dynamically generated by updateDiskDriveTabs() -->
-                    </span>
-                </div>
-                <div id="tapeCatalog" style="max-height: 150px; overflow-y: auto; font-family: monospace; font-size: 11px; display: none; border: 1px solid var(--border); border-top: none; border-radius: 0 0 3px 3px; padding: 2px 0;"></div>
-                <div id="diskCatalog" style="max-height: 150px; overflow-y: auto; font-family: monospace; font-size: 11px; display: none; border: 1px solid var(--border); border-top: none; border-radius: 0 0 3px 3px; padding: 2px 0;"></div>
+                <button class="control-btn" title="Play tape (real-time mode)" onclick={tapePlay}>&#9654; Play</button>
+                <button class="control-btn" title="Stop tape playback" style="margin-left: 5px;" onclick={tapeStop}>&#9209; Stop</button>
+                <button class="control-btn" title="Rewind tape to beginning" style="margin-left: 5px;" onclick={tapeRewind}>&#9194; Rewind</button>
             </div>
         </div>
     </div>
-    </div><!-- settings-media -->
+    </div>
 
     <!-- Audio Sub-tab -->
-    <div class="settings-subtab-content" class:active={activeSubtab === 'audio'} id="settings-audio">
+    <div class="settings-subtab-content" class:active={activeSubtab === 'audio'}>
     <div class="settings-tab-content">
         <div class="settings-section">
             <div class="settings-row">
-                <label class="checkbox-label" title="Enable AY-3-8910 sound output">
-                    <input type="checkbox" id="chkSound"> Sound
+                <label class="checkbox-label" title="Enable sound output">
+                    <input type="checkbox" checked={soundEnabled} onchange={toggleSoundEnabled}> Sound
                 </label>
                 <label class="checkbox-label" title="Enable AY chip in 48K mode (like Melodik interface)" style="margin-left: 15px;">
-                    <input type="checkbox" id="chkAY48k"> AY in 48K
+                    <input type="checkbox" checked={ay48k} onchange={toggleAY48k}> AY in 48K
                 </label>
-                <button id="btnMute" class="control-btn" style="margin-left: 15px;" title="Mute/unmute sound">&#128266;</button>
             </div>
             <div class="settings-row">
-                <label for="volumeSlider" style="min-width: 60px;">Volume:</label>
-                <input type="range" id="volumeSlider" min="0" max="100" value="50" style="width: 120px;">
-                <span id="volumeValue" style="min-width: 35px; text-align: right;">50%</span>
+                <label style="min-width: 60px;">Volume:</label>
+                <input type="range" min="0" max="100" value={volume} oninput={changeVolume} style="width: 120px;">
+                <span style="min-width: 35px; text-align: right;">{volume}%</span>
             </div>
             <div class="settings-row">
-                <label for="stereoMode">Stereo:</label>
-                <select id="stereoMode" title="Stereo panning mode">
+                <label>Stereo:</label>
+                <select title="Stereo panning mode" value={stereoMode} onchange={changeStereo}>
                     <option value="mono">Mono</option>
-                    <option value="abc" selected>ABC (A-left, B-center, C-right)</option>
+                    <option value="abc">ABC (A-left, B-center, C-right)</option>
                     <option value="acb">ACB (A-left, C-center, B-right)</option>
                 </select>
             </div>
         </div>
     </div>
-    </div><!-- settings-audio -->
+    </div>
 
     <!-- Machines Sub-tab -->
-    <div class="settings-subtab-content" class:active={activeSubtab === 'machines'} id="settings-machines">
+    <div class="settings-subtab-content" class:active={activeSubtab === 'machines'}>
     <div class="settings-tab-content">
         <div class="settings-section">
             <div style="margin-bottom: 8px; color: var(--text-secondary); font-size: 11px;">Choose which machines appear in the toolbar dropdown:</div>
-            <div id="machineCheckboxes"></div>
-            <button id="btnSettingsLoadRoms" style="margin-top: 8px;">Load ROMs...</button>
+            {#each Object.entries(machineGroups) as [group, machines]}
+                <div style="margin-bottom: 8px;">
+                    <div style="color: var(--text-secondary); font-size: 11px; margin-bottom: 4px; font-weight: bold;">{group}</div>
+                    {#each machines as machine}
+                        <label class="checkbox-label" style="display: block; margin-left: 8px; margin-bottom: 2px;">
+                            <input
+                                type="checkbox"
+                                checked={visibleMachines.includes(machine.id)}
+                                disabled={machine.id === '48k'}
+                                onchange={(e: Event) => toggleMachineVisibility(machine.id, (e.target as HTMLInputElement).checked)}
+                            > {machine.name}
+                        </label>
+                    {/each}
+                </div>
+            {/each}
         </div>
     </div>
-    </div><!-- settings-machines -->
+    </div>
 
-</div><!-- tab-settings -->
+</div>
 
 <style>
-    /* Settings Tab */
     #tab-settings {
         overflow-y: auto;
         max-height: calc(100vh - 120px);
@@ -312,40 +475,9 @@
     .settings-subtab-content.active {
         display: block;
     }
-    .media-catalog-bar {
-        display: flex;
-        gap: 2px;
-        margin-top: 6px;
-        border-bottom: 1px solid var(--bg-button);
-    }
-    .media-catalog-btn {
-        padding: 3px 10px;
-        background: var(--bg-tertiary);
-        border: 1px solid var(--bg-button);
-        border-bottom: none;
-        border-radius: 3px 3px 0 0;
-        color: var(--text-secondary);
-        font-size: 11px;
-        cursor: pointer;
-        margin-bottom: -1px;
-    }
-    .media-catalog-btn:hover {
-        background: var(--bg-button);
-        color: var(--text-primary);
-    }
-    .media-catalog-btn.active {
-        background: var(--bg-secondary);
-        color: var(--cyan);
-        border-bottom: 1px solid var(--bg-secondary);
-    }
     .settings-tab-content {
         padding: 15px;
         max-width: 720px;
-    }
-    .settings-tab-content h3 {
-        margin: 0 0 15px 0;
-        color: var(--accent);
-        font-size: 16px;
     }
     .settings-section {
         margin-bottom: 15px;
@@ -354,16 +486,6 @@
         border: 1px solid var(--bg-button);
         border-radius: 4px;
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-    }
-    .settings-section h4 {
-        margin: -12px -12px 12px -12px;
-        padding: 8px 12px;
-        color: var(--cyan);
-        font-size: 11px;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        background: var(--bg-button);
-        border-radius: 3px 3px 0 0;
     }
     .settings-row {
         margin-bottom: 8px;
@@ -386,54 +508,32 @@
         padding: 5px 10px;
         font-size: 12px;
     }
-    .palette-preview {
-        display: flex;
-        flex-direction: column;
-        gap: 4px;
-        margin-top: 8px;
-    }
-    .palette-row {
-        display: flex;
-        gap: 4px;
-        align-items: center;
-    }
-    .palette-row-label {
-        font-size: 10px;
+    .zoom-btn {
+        padding: 2px 8px;
+        font-size: 11px;
+        background: var(--bg-button);
+        border: 1px solid var(--border);
         color: var(--text-secondary);
-        width: 42px;
-        text-align: right;
-        margin-right: 4px;
+        cursor: pointer;
+        border-radius: 3px;
     }
-    .palette-color {
-        width: 28px;
-        height: 28px;
-        border: 1px solid var(--border-secondary);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 9px;
-        font-weight: bold;
-        color: #000;
-        text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff;
+    .zoom-btn.active {
+        background: var(--accent);
+        color: var(--bg-primary);
     }
-    .palette-color::after {
-        content: attr(data-index);
-        border-radius: 2px;
+    .zoom-btn:hover {
+        background: var(--bg-button-hover);
     }
-    .ulaplus-palette-preview {
-        margin-top: 10px;
-        padding: 8px;
-        background: var(--bg-tertiary);
-        border-radius: 4px;
+    .control-btn {
+        padding: 3px 10px;
+        font-size: 11px;
+        background: var(--bg-button);
+        border: 1px solid var(--border);
+        color: var(--text-primary);
+        cursor: pointer;
+        border-radius: 3px;
     }
-    .ulaplus-palette-grid {
-        display: grid;
-        grid-template-columns: repeat(16, 18px);
-        gap: 2px;
-    }
-    .ulaplus-palette-cell {
-        width: 18px;
-        height: 18px;
-        border: 1px solid var(--border-secondary);
+    .control-btn:hover {
+        background: var(--bg-button-hover);
     }
 </style>
