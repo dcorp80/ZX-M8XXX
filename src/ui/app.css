@@ -1,0 +1,144 @@
+/* ZX-M8XXX — Global Styles */
+
+* { box-sizing: border-box; }
+.hidden { display: none !important; }
+
+/* Theme variables */
+:root {
+    --bg-primary: #1a1a2e;
+    --bg-secondary: #2a2a4a;
+    --bg-tertiary: #222238;
+    --bg-button: #4a4a6a;
+    --bg-button-hover: #5a5a7a;
+    --bg-screen: #111;
+    --text-primary: #eee;
+    --text-secondary: #888;
+    --accent: #ff6b6b;
+    --accent-hover: #ff8080;
+    --cyan: #4ecdc4;
+}
+
+body.light-theme {
+    --bg-primary: #e8e8f0;
+    --bg-secondary: #d0d0e0;
+    --bg-tertiary: #dcdce8;
+    --bg-button: #b0b0c0;
+    --bg-button-hover: #9090a0;
+    --bg-screen: #888;
+    --text-primary: #222;
+    --text-secondary: #555;
+    --accent: #d04040;
+    --accent-hover: #c03030;
+    --cyan: #0a8a82;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    margin: 0;
+    padding: 10px;
+    min-height: 100vh;
+    transition: background 0.3s, color 0.3s;
+}
+
+/* Layout */
+.container { max-width: 1090px; margin: 0 auto; }
+.main-layout { display: flex; flex-direction: column; }
+.emulator-section { flex-shrink: 0; }
+
+/* Landscape mode - side by side layout */
+@media (min-width: 1400px) {
+    body { padding: 10px; }
+    .container { max-width: none; margin: 0; position: relative; }
+    .main-layout {
+        flex-direction: row;
+        align-items: flex-start;
+        gap: 10px;
+    }
+    .emulator-section {
+        flex: 0 0 auto;
+        position: relative;
+    }
+    .tab-container {
+        flex: 1;
+        min-width: 800px;
+        position: relative;
+        top: -40px;
+        margin-bottom: -40px;
+        margin-top: 0;
+        margin-left: 60px;
+    }
+}
+
+/* Base element styles */
+button {
+    background: var(--bg-button);
+    color: var(--text-primary);
+    border: none;
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background 0.2s;
+}
+button:hover { background: var(--bg-button-hover); }
+button:disabled { background: var(--bg-secondary); cursor: not-allowed; opacity: 0.5; }
+button.primary { background: var(--accent); }
+button.primary:hover { background: var(--accent-hover); }
+
+select {
+    background: var(--bg-button);
+    color: var(--text-primary);
+    border: none;
+    padding: 10px 15px;
+    border-radius: 4px;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.file-input { display: none; }
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--bg-button);
+    padding: 2px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+    cursor: pointer;
+    height: 26px;
+}
+.checkbox-label:hover { background: var(--bg-button-hover); }
+.checkbox-label input { cursor: pointer; }
+
+/* Toast messages */
+.message {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    padding: 15px 25px;
+    border-radius: 4px;
+    animation: fadeIn 0.3s ease;
+    z-index: 100;
+}
+.message.success { background: #2ecc71; }
+.message.error { background: #e74c3c; }
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Drag and drop overlay */
+.drop-zone {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(78, 205, 196, 0.9);
+    display: none;
+    justify-content: center;
+    align-items: center;
+    font-size: 2em;
+    z-index: 50;
+}
+.drop-zone.active { display: flex; }

@@ -1,0 +1,18 @@
+{
+  "extends": "@tsconfig/svelte/tsconfig.json",
+  "compilerOptions": {
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+    "target": "ESNext",
+    "useDefineForClassFields": false,
+    "module": "ESNext",
+    "types": ["svelte", "vite/client"],
+    "noEmit": true,
+    "allowJs": true,
+    "checkJs": false,
+    "moduleDetection": "force",
+    "strict": false,
+    "noImplicitAny": false,
+    "strictPropertyInitialization": false
+  },
+  "include": ["src/**/*.ts", "src/**/*.svelte"]
+}

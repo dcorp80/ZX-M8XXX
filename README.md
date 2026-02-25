@@ -1,127 +1,47 @@
-# ZX-M8XXX
+# Svelte + TS + Vite
 
-**Version 0.9.27** | [Changelog](CHANGELOG.md)
+This template should help get you started developing with Svelte and TypeScript in Vite.
 
-ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integrated debugger designed for reverse engineering and development. No build tools, no dependencies - just open `index.html` in your browser.
+## Recommended IDE Setup
 
-## Features
+[VS Code](https://code.visualstudio.com/) + [Svelte](https://marketplace.visualstudio.com/items?itemName=svelte.svelte-vscode).
 
-### Emulation
-- Full Z80 CPU emulation (all documented + undocumented opcodes)
-- 48K, 128K, +2, +2A, +3, Pentagon, Pentagon 1024, and Scorpion ZS 256 machine support
-- Memory banking and contention emulation
-- Pixel-perfect ULA video timing with border effects
-- ULAplus extended palette (64 colors, HAM256 raster effects)
-- AY-3-8910 sound chip emulation (stereo modes: Mono/ABC/ACB)
-- PSG file export (record AY music with player source)
-- SNA/Z80/SZX snapshot loading/saving
-- TAP/TZX tape loading (instant or real-time with border stripes and sound)
-- Auto Load: automatic LOAD "" for tapes, TR-DOS boot for disks (turbo block handoff)
-- TRD/SCL disk image support (TR-DOS format) with boot injection
-- DSK disk image support (+3 µPD765 FDC, standard and extended CPC DSK format)
-- Multi-drive support: BetaDisk 4 drives (A-D), FDC 2 drives (A-B), simultaneous tape+disk
-- ZIP archive support
-- RZX playback
-- Kempston Joystick (numpad) with extended buttons support
-- Kempston Mouse with wheel support
-- Hardware gamepad support (USB/Bluetooth via Gamepad API)
-- Keyboard: Ctrl=Caps Shift, Alt=Symbol Shift (works with any layout)
+## Need an official Svelte framework?
 
-### Debugger
-- Unified breakpoint system (execution, memory read/write, port I/O)
-- Execution trace with history navigation (10,000 instructions)
-- Memory region marking (code/data/text/graphics)
-- Auto memory mapping (detect regions during execution)
-- Memory heatmap visualization
-- Labels with import/export
-- Cross-references (XRefs) tracking
-- Subroutine detection and marking
-- Code folding (collapse/expand subroutines and custom blocks)
-- Bookmarks for quick navigation
-- Undo/Redo support
-- Pattern search with wildcards
-- Project save/load (complete session state)
+Check out [SvelteKit](https://github.com/sveltejs/kit#readme), which is also powered by Vite. Deploy anywhere with its serverless-first approach and adapt to various platforms, with out of the box support for TypeScript, SCSS, and Less, and easily-added support for mdsvex, GraphQL, PostCSS, Tailwind CSS, and more.
 
-### Assembler
-- Integrated Z80 assembler (sjasmplus-compatible)
-- Multi-file projects with virtual file system
-- Syntax highlighting
-- Search/replace across all files
-- Output: SAVEBIN, SAVESNA, SAVETAP
-- MD5 checksum verification
-- Debug injection at entry point
+## Technical considerations
 
-### Tools
-- Graphics Viewer for sprite search
-- Memory Watches (up to 10 addresses)
-- Text Scanner for string search
-- Programmer Calculator (hex/dec/oct/bin)
-- Compare Tool (snapshots, binaries, emulator state)
-- Explorer (TAP, TZX, SNA, Z80, SZX, RZX, TRD, SCL, DSK, ZIP — BASIC decoder, disassembly, hex dump)
-- Z80 Opcodes reference
+**Why use this over SvelteKit?**
 
-## Quick Start
+- It brings its own routing solution which might not be preferable for some users.
+- It is first and foremost a framework that just happens to use Vite under the hood, not a Vite app.
 
-1. Place ROM files in `roms/` directory:
-   - `48.rom` - ZX Spectrum 48K (16KB, required)
-   - `128.rom` - ZX Spectrum 128K (32KB, optional)
-   - `plus2.rom` - ZX Spectrum +2 (32KB, optional)
-   - `plus2a.rom` - ZX Spectrum +2A (64KB, optional)
-   - `plus3.rom` - ZX Spectrum +3 (64KB, optional)
-   - `pentagon.rom` - Pentagon 128K (32KB, optional)
-   - `scorpion.rom` - Scorpion ZS 256 (64KB, optional)
-   - `trdos.rom` - TR-DOS 5.03/5.04t (16KB, for disk images)
-2. Open `index.html` in a modern browser
-3. Click **Help** button for comprehensive documentation
+This template contains as little as possible to get started with Vite + TypeScript + Svelte, while taking into account the developer experience with regards to HMR and intellisense. It demonstrates capabilities on par with the other `create-vite` templates and is a good starting point for beginners dipping their toes into a Vite + Svelte project.
 
-## File Formats
+Should you later need the extended capabilities and extensibility provided by SvelteKit, the template has been structured similarly to SvelteKit so that it is easy to migrate.
 
-| Format | Description |
-|--------|-------------|
-| DSK | +3 disk image (standard and extended CPC DSK) |
-| RZX | Input recording |
-| SCL | TR-DOS file archive |
-| SNA | Snapshot (48K/128K) |
-| SZX | Spectaculator snapshot format |
-| TAP | Tape format (instant or real-time loading) |
-| TRD | TR-DOS disk image |
-| TZX | Extended tape format (turbo, pure tone, loops) |
-| Z80 | Snapshot (v1, v2, v3 with compression) |
-| ZIP | Archive support |
+**Why `global.d.ts` instead of `compilerOptions.types` inside `jsconfig.json` or `tsconfig.json`?**
 
-## Known Limitations
+Setting `compilerOptions.types` shuts out all other types not explicitly listed in the configuration. Using triple-slash references keeps the default TypeScript setting of accepting type information from the entire workspace, while also adding `svelte` and `vite/client` type information.
 
-- **Real-time tape loading** (work in progress): Some copy protection schemes work, others don't yet. Standard loaders and many turbo loaders work; complex protection may fail. Flash load (instant) mode is more reliable.
-- **RZX playback**: Partial support - some recordings may desync due to timing differences
-- **Z80 save uncompressed**: Z80 snapshots are saved without RLE compression for maximum compatibility (~131KB for 128K, ~49KB for 48K)
-- **ULAplus raster effects**: HAM256 and similar multi-entry palette effects work correctly. Per-scanline effects (like ULAplusDemo border stripes) may show minor paper/border desync at edges.
+**Why include `.vscode/extensions.json`?**
 
-## License
+Other templates indirectly recommend extensions via the README, but this file allows VS Code to prompt the user to install the recommended extension upon opening the project.
 
-GPL-3.0
+**Why enable `allowJs` in the TS template?**
 
-**Test Programs:** The test programs in the `tests/` folder (z80ccf, z80doc, z80docflags, etc.) are copyright of their respective authors and included for emulator validation purposes only.
+While `allowJs: false` would indeed prevent the use of `.js` files in the project, it does not prevent the use of JavaScript syntax in `.svelte` files. In addition, it would force `checkJs: false`, bringing the worst of both worlds: not being able to guarantee the entire codebase is TypeScript, and also having worse typechecking for the existing JavaScript. In addition, there are valid use cases in which a mixed codebase may be relevant.
 
-## Credits
+**Why is HMR not preserving my local component state?**
 
-Based on Z80 documentation and Fuse emulator behavior.
+HMR state preservation comes with a number of gotchas! It has been disabled by default in both `svelte-hmr` and `@sveltejs/vite-plugin-svelte` due to its often surprising behavior. You can read the details [here](https://github.com/rixo/svelte-hmr#svelte-hmr).
 
-Inspired by: JSSpeccy 3, EmuzWin, Swan, ZXMAK2
+If you have state that's important to retain within a component, consider creating an external store which would not be replaced by HMR.
 
-## Screenshots
-
-![Debugger View](docs/main_1.png)
-
-![Graphics Viewer](docs/main_2.png)
-
-### Games
-
-<p>
-<img src="docs/screenshot_academy.png" width="49%">&nbsp;<img src="docs/screenshot_aquaplane.png" width="49%">
-</p>
-<p>
-<img src="docs/screenshot_comet_game.png" width="49%">&nbsp;<img src="docs/screenshot_shock.png" width="49%">
-</p>
-<p>
-<img src="docs/screenshot_venom.png" width="49%">&nbsp;<img src="docs/screenshot_yazzie.png" width="49%">
-</p>
+```ts
+// store.ts
+// An extremely simple external store
+import { writable } from 'svelte/store'
+export default writable(0)
+```
