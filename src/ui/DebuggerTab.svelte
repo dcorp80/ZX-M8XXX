@@ -1,291 +1,695 @@
 <script lang="ts">
+    import { onMount, onDestroy } from 'svelte';
     import type { EmulatorController } from '../core/emulator-controller';
+    import { Disassembler } from '../core/cpu/disasm';
+
     let { emulator }: { emulator: EmulatorController } = $props();
+
+    // ---- Helpers ----
+    function hex8(v: number) { return v.toString(16).toUpperCase().padStart(2, '0'); }
+    function hex16(v: number) { return v.toString(16).toUpperCase().padStart(4, '0'); }
+
+    // ---- Constants ----
+    const DISASM_LINES = 32;
+    const DISASM_PC_POSITION = 8; // PC shown at line 8 from top
+    const MEMORY_LINES = 16;
+    const BYTES_PER_LINE = 16;
+
+    // ---- State ----
+    let disasm: Disassembler | null = $state(null);
+    let disasmViewAddress: number | null = $state(null);
+    let followPC = $state(true);
+    let showTstates = $state(false);
+
+    // Registers (updated by updateDebugger)
+    let regAF = $state(0), regBC = $state(0), regDE = $state(0), regHL = $state(0);
+    let regIX = $state(0), regIY = $state(0), regSP = $state(0), regPC = $state(0);
+    let regAF_ = $state(0), regBC_ = $state(0), regDE_ = $state(0), regHL_ = $state(0);
+    let regI = $state(0), regR = $state(0), regIM = $state(0);
+    let regIFF1 = $state(false), regIFF2 = $state(false);
+    let regTstates = $state(0);
+    let flags = $state(0); // F register
+
+    // Paging
+    let is128k = $state(false);
+    let pagingRamBank = $state(0), pagingRomBank = $state(0), pagingScreenBank = $state(5);
+
+    // Disassembly lines
+    type DisasmLine = { addr: number; bytes: number[]; mnemonic: string; length: number; timing?: string };
+    let disasmLines: DisasmLine[] = $state([]);
+
+    // Memory view
+    let memoryViewAddress = $state(0);
+    type MemLine = { addr: number; bytes: { addr: number; val: number }[]; ascii: string };
+    let memLines: MemLine[] = $state([]);
+
+    // Stack
+    type StackEntry = { addr: number; value: number; current: boolean };
+    let stackEntries: StackEntry[] = $state([]);
+
+    // Panel types
+    let leftPanelType = $state('disasm');
+    let rightPanelType = $state('memdump');
+
+    // Triggers
+    let triggerList: any[] = $state([]);
+    let triggerTypeInput = $state('exec');
+    let triggerAddrInput = $state('');
+    let triggerCondInput = $state('');
+
+    // Bottom panel tabs
+    let activeBottomTab = $state('breakpoints');
+
+    // ---- Address input state ----
+    let disasmAddrInput = $state('');
+    let memAddrInput = $state('0000');
+    let tstatesInput = $state('1000');
+
+    // Left panel memory view (when leftPanelType === 'memdump')
+    let leftMemAddrInput = $state('0000');
+    let leftMemViewAddress = $state(0);
+    let leftMemLines: MemLine[] = $state([]);
+
+    // Right panel disasm (when rightPanelType === 'disasm')
+    let rightDisasmAddrInput = $state('');
+    let rightDisasmViewAddress = $state(0);
+    let rightDisasmLines: DisasmLine[] = $state([]);
+
+    // Memory search
+    let memSearchInput = $state('');
+    let memSearchType = $state('hex');
+    let memSearchResults = $state('');
+    let memSearchLastAddr = $state(-1);
+
+    // Bottom panel tab definitions
+    const bottomTabs = [
+        { id: 'breakpoints', label: 'Breakpoints', title: 'Breakpoints and watchpoints' },
+        { id: 'labels', label: 'Labels', title: 'Address labels' },
+        { id: 'watches', label: 'Watches', title: 'Memory watches' },
+        { id: 'tools', label: 'Tools', title: 'POKE search, Auto-Map, XRefs, Text scan' },
+        { id: 'trace', label: 'Trace', title: 'Execution trace history' },
+    ];
+
+    // ---- React to panel type changes ----
+    $effect(() => {
+        if (leftPanelType === 'memdump') {
+            updateLeftMemoryView();
+        }
+    });
+    $effect(() => {
+        if (rightPanelType === 'disasm') {
+            rightDisasmViewAddress = regPC;
+            updateRightDisassemblyView();
+        }
+    });
+
+    // ---- Core update function ----
+    function updateDebugger() {
+        const s = emulator.spectrum;
+        if (!s.cpu) return;
+        const cpu = s.cpu;
+
+        // Create disassembler on first use
+        if (!disasm) disasm = new Disassembler(s.memory);
+
+        // Read registers
+        regAF = (cpu.a << 8) | cpu.f; regBC = (cpu.b << 8) | cpu.c;
+        regDE = (cpu.d << 8) | cpu.e; regHL = (cpu.h << 8) | cpu.l;
+        regIX = cpu.ix; regIY = cpu.iy; regSP = cpu.sp; regPC = cpu.pc;
+        regAF_ = (cpu.a_ << 8) | cpu.f_; regBC_ = (cpu.b_ << 8) | cpu.c_;
+        regDE_ = (cpu.d_ << 8) | cpu.e_; regHL_ = (cpu.h_ << 8) | cpu.l_;
+        regI = cpu.i; regR = cpu.rFull; regIM = cpu.im;
+        regIFF1 = cpu.iff1; regIFF2 = cpu.iff2;
+        regTstates = cpu.tStates;
+        flags = cpu.f;
+
+        // Paging
+        is128k = s.memory.machineType !== '48k';
+        if (is128k && s.memory.getPagingState) {
+            const paging = s.memory.getPagingState();
+            pagingRamBank = paging.ramBank;
+            pagingRomBank = paging.romBank;
+            pagingScreenBank = paging.screenBank;
+        }
+
+        // Left panel
+        if (leftPanelType === 'disasm') {
+            updateDisassemblyView();
+        } else {
+            updateLeftMemoryView();
+        }
+
+        // Right panel
+        if (rightPanelType === 'memdump') {
+            updateMemoryView();
+        } else if (rightPanelType === 'disasm') {
+            updateRightDisassemblyView();
+        }
+
+        // Stack
+        updateStackView();
+
+        // Triggers
+        triggerList = emulator.getTriggers();
+    }
+
+    function updateDisassemblyView() {
+        if (!disasm) return;
+        const pc = regPC;
+        let viewAddr: number;
+
+        if (followPC) {
+            viewAddr = disasm.findStartForPosition(pc, DISASM_PC_POSITION, DISASM_LINES);
+        } else if (disasmViewAddress !== null) {
+            viewAddr = disasmViewAddress;
+        } else {
+            viewAddr = disasm.findStartForPosition(pc, DISASM_PC_POSITION, DISASM_LINES);
+        }
+
+        const lines = disasm.disassembleRange(viewAddr, DISASM_LINES);
+        disasmLines = lines.map(line => ({
+            ...line,
+            timing: showTstates ? disasm!.getTiming(line.bytes) : undefined
+        }));
+    }
+
+    function updateMemoryView() {
+        const lines: MemLine[] = [];
+        for (let row = 0; row < MEMORY_LINES; row++) {
+            const lineAddr = (memoryViewAddress + row * BYTES_PER_LINE) & 0xffff;
+            const bytes: { addr: number; val: number }[] = [];
+            let ascii = '';
+            for (let i = 0; i < BYTES_PER_LINE; i++) {
+                const addr = (lineAddr + i) & 0xffff;
+                const val = emulator.peek(addr);
+                bytes.push({ addr, val });
+                ascii += (val >= 32 && val < 127) ? String.fromCharCode(val) : '.';
+            }
+            lines.push({ addr: lineAddr, bytes, ascii });
+        }
+        memLines = lines;
+    }
+
+    function updateStackView() {
+        const entries: StackEntry[] = [];
+        const sp = regSP;
+        for (let offset = -6; offset <= 6; offset += 2) {
+            const addr = (sp + offset) & 0xffff;
+            const lo = emulator.peek(addr);
+            const hi = emulator.peek((addr + 1) & 0xffff);
+            entries.push({ addr, value: lo | (hi << 8), current: offset === 0 });
+        }
+        stackEntries = entries;
+    }
+
+    // ---- Step controls ----
+    function stepInto() {
+        if (!emulator.romLoaded) return;
+        if (emulator.isRunning()) emulator.stop();
+        disasmViewAddress = null;
+        emulator.stepInto();
+        updateDebugger();
+    }
+
+    function stepOver() {
+        if (!emulator.romLoaded) return;
+        if (emulator.isRunning()) emulator.stop();
+        disasmViewAddress = null;
+        emulator.stepOver();
+        updateDebugger();
+    }
+
+    function runToInt() {
+        if (!emulator.romLoaded) return;
+        if (emulator.isRunning()) emulator.stop();
+        disasmViewAddress = null;
+        emulator.runToInterrupt();
+        updateDebugger();
+    }
+
+    function runToRet() {
+        if (!emulator.romLoaded) return;
+        if (emulator.isRunning()) emulator.stop();
+        disasmViewAddress = null;
+        emulator.runToRet();
+        updateDebugger();
+    }
+
+    function runTstates() {
+        if (!emulator.romLoaded) return;
+        if (emulator.isRunning()) emulator.stop();
+        const t = parseInt(tstatesInput) || 1000;
+        emulator.runTstates(t);
+        updateDebugger();
+    }
+
+    function runToCursor() {
+        // Run to the selected disasm line address (first line as default)
+        if (!emulator.romLoaded || disasmLines.length === 0) return;
+        if (emulator.isRunning()) emulator.stop();
+        // Use the first visible address after PC for now
+        // TODO: proper cursor selection
+    }
+
+    // ---- Navigation ----
+    function goToDisasmAddress() {
+        const addr = parseInt(disasmAddrInput, 16);
+        if (!isNaN(addr)) {
+            disasmViewAddress = addr & 0xffff;
+            followPC = false;
+            updateDisassemblyView();
+        }
+    }
+
+    function goToPC() {
+        disasmViewAddress = null;
+        followPC = true;
+        updateDisassemblyView();
+    }
+
+    function goToMemAddress() {
+        const addr = parseInt(memAddrInput, 16);
+        if (!isNaN(addr)) {
+            memoryViewAddress = addr & 0xffff;
+            updateMemoryView();
+        }
+    }
+
+    function memGoToPC() { memoryViewAddress = regPC; updateMemoryView(); memAddrInput = hex16(regPC); }
+    function memGoToSP() { memoryViewAddress = regSP; updateMemoryView(); memAddrInput = hex16(regSP); }
+    function memGoToHL() { memoryViewAddress = regHL; updateMemoryView(); memAddrInput = hex16(regHL); }
+    function memPgUp() { memoryViewAddress = (memoryViewAddress - MEMORY_LINES * BYTES_PER_LINE) & 0xffff; updateMemoryView(); memAddrInput = hex16(memoryViewAddress); }
+    function memPgDn() { memoryViewAddress = (memoryViewAddress + MEMORY_LINES * BYTES_PER_LINE) & 0xffff; updateMemoryView(); memAddrInput = hex16(memoryViewAddress); }
+
+    // ---- Breakpoints ----
+    function toggleBreakpointAtAddr(addr: number) {
+        emulator.toggleBreakpoint(addr);
+        triggerList = emulator.getTriggers();
+        // Force disasm re-render
+        disasmLines = [...disasmLines];
+    }
+
+    function addTrigger() {
+        if (!triggerAddrInput.trim()) return;
+        try {
+            const spec = triggerAddrInput.trim();
+            const trigger = emulator.parseTriggerSpec(spec, triggerTypeInput);
+            if (triggerCondInput.trim()) trigger.condition = triggerCondInput.trim();
+            emulator.addTrigger(trigger);
+            triggerList = emulator.getTriggers();
+            triggerAddrInput = '';
+            triggerCondInput = '';
+        } catch (e: any) {
+            console.error('Invalid trigger:', e.message);
+        }
+    }
+
+    function removeTrigger(index: number) {
+        emulator.removeTrigger(index);
+        triggerList = emulator.getTriggers();
+    }
+
+    function toggleTrigger(index: number) {
+        emulator.toggleTrigger(index);
+        triggerList = emulator.getTriggers();
+    }
+
+    function clearTriggers() {
+        emulator.clearTriggers();
+        triggerList = emulator.getTriggers();
+    }
+
+    // ---- Left panel memory view ----
+    function updateLeftMemoryView() {
+        const lines: MemLine[] = [];
+        for (let row = 0; row < MEMORY_LINES; row++) {
+            const lineAddr = (leftMemViewAddress + row * BYTES_PER_LINE) & 0xffff;
+            const bytes: { addr: number; val: number }[] = [];
+            let ascii = '';
+            for (let i = 0; i < BYTES_PER_LINE; i++) {
+                const addr = (lineAddr + i) & 0xffff;
+                const val = emulator.peek(addr);
+                bytes.push({ addr, val });
+                ascii += (val >= 32 && val < 127) ? String.fromCharCode(val) : '.';
+            }
+            lines.push({ addr: lineAddr, bytes, ascii });
+        }
+        leftMemLines = lines;
+    }
+
+    function goToLeftMemAddress() {
+        const addr = parseInt(leftMemAddrInput, 16);
+        if (!isNaN(addr)) {
+            leftMemViewAddress = addr & 0xffff;
+            updateLeftMemoryView();
+        }
+    }
+
+    // ---- Right panel disasm ----
+    function updateRightDisassemblyView() {
+        if (!disasm) return;
+        const lines = disasm.disassembleRange(rightDisasmViewAddress, DISASM_LINES);
+        rightDisasmLines = lines;
+    }
+
+    function goToRightDisasmAddress() {
+        const addr = parseInt(rightDisasmAddrInput, 16);
+        if (!isNaN(addr)) {
+            rightDisasmViewAddress = addr & 0xffff;
+            updateRightDisassemblyView();
+        }
+    }
+
+    // ---- Memory search ----
+    function doMemSearch() {
+        const input = memSearchInput.trim();
+        if (!input) return;
+        const bytes = parseSearchBytes(input, memSearchType);
+        if (!bytes || bytes.length === 0) { memSearchResults = 'Invalid'; return; }
+        const addr = searchMemory(bytes, 0);
+        if (addr >= 0) {
+            memoryViewAddress = addr;
+            memAddrInput = hex16(addr);
+            memSearchLastAddr = addr;
+            updateMemoryView();
+            memSearchResults = `Found at ${hex16(addr)}`;
+        } else {
+            memSearchResults = 'Not found';
+            memSearchLastAddr = -1;
+        }
+    }
+
+    function doMemSearchNext() {
+        const input = memSearchInput.trim();
+        if (!input || memSearchLastAddr < 0) return;
+        const bytes = parseSearchBytes(input, memSearchType);
+        if (!bytes) return;
+        const addr = searchMemory(bytes, (memSearchLastAddr + 1) & 0xffff);
+        if (addr >= 0) {
+            memoryViewAddress = addr;
+            memAddrInput = hex16(addr);
+            memSearchLastAddr = addr;
+            updateMemoryView();
+            memSearchResults = `Found at ${hex16(addr)}`;
+        } else {
+            memSearchResults = 'No more';
+        }
+    }
+
+    function parseSearchBytes(input: string, type: string): number[] | null {
+        if (type === 'hex') {
+            const clean = input.replace(/\s/g, '');
+            if (!/^[0-9a-fA-F]+$/.test(clean) || clean.length % 2 !== 0) return null;
+            const bytes: number[] = [];
+            for (let i = 0; i < clean.length; i += 2) bytes.push(parseInt(clean.substr(i, 2), 16));
+            return bytes;
+        } else if (type === 'dec') {
+            const val = parseInt(input);
+            if (isNaN(val) || val < 0 || val > 255) return null;
+            return [val];
+        } else {
+            return [...input].map(c => c.charCodeAt(0));
+        }
+    }
+
+    function searchMemory(bytes: number[], startAddr: number): number {
+        for (let i = 0; i < 65536; i++) {
+            const addr = (startAddr + i) & 0xffff;
+            let found = true;
+            for (let j = 0; j < bytes.length; j++) {
+                if (emulator.peek((addr + j) & 0xffff) !== bytes[j]) { found = false; break; }
+            }
+            if (found) return addr;
+        }
+        return -1;
+    }
+
+    // ---- Breakpoint check helper ----
+    function hasBpAt(addr: number): boolean {
+        return triggerList.some(t => (t.type === 'exec' || !t.type) && t.address === addr && !t.disabled);
+    }
+
+    // ---- Panel switching ----
+    function setLeftPanel(e: Event) {
+        leftPanelType = (e.target as HTMLSelectElement).value;
+    }
+    function setRightPanel(e: Event) {
+        rightPanelType = (e.target as HTMLSelectElement).value;
+    }
+
+    // ---- Event wiring ----
+    function onBreakpointHit(addr: number) {
+        disasmViewAddress = null;
+        updateDebugger();
+    }
+
+    function onTriggerHit(_info: any) {
+        disasmViewAddress = null;
+        updateDebugger();
+    }
+
+    let refreshInterval: ReturnType<typeof setInterval> | null = null;
+
+    onMount(() => {
+        emulator.on('breakpoint', onBreakpointHit);
+        emulator.on('trigger', onTriggerHit);
+        emulator.on('watchpoint', onTriggerHit);
+        emulator.on('portBreakpoint', onTriggerHit);
+
+        // Periodic refresh every 500ms (same as original)
+        refreshInterval = setInterval(() => {
+            if (emulator.romLoaded) updateDebugger();
+        }, 500);
+    });
+
+    onDestroy(() => {
+        emulator.off('breakpoint', onBreakpointHit);
+        emulator.off('trigger', onTriggerHit);
+        emulator.off('watchpoint', onTriggerHit);
+        emulator.off('portBreakpoint', onTriggerHit);
+        if (refreshInterval) clearInterval(refreshInterval);
+    });
+
+    // Flag definitions
+    const FLAG_DEFS = [
+        { name: 'S', bit: 0x80 }, { name: 'Z', bit: 0x40 },
+        { name: 'y', bit: 0x20 }, { name: 'H', bit: 0x10 },
+        { name: 'x', bit: 0x08 }, { name: 'P/V', bit: 0x04 },
+        { name: 'N', bit: 0x02 }, { name: 'C', bit: 0x01 },
+    ];
+
+    // Key handler for address inputs
+    function onEnter(e: KeyboardEvent, fn: () => void) {
+        if (e.key === 'Enter') fn();
+    }
 </script>
 
 <div class="debugger-container">
-    <div class="debugger-panel open" id="debuggerPanel">
+    <div class="debugger-panel open">
         <div class="main-debug-row">
-            <div class="debugger-section disasm-panel" id="leftPanel">
+            <!-- LEFT PANEL: Disassembly / Memory -->
+            <div class="debugger-section disasm-panel">
                 <div class="memory-header">
-                    <select id="leftPanelType" class="panel-type-select" title="Panel type">
+                    <select class="panel-type-select" title="Panel type" bind:value={leftPanelType}>
                         <option value="disasm">Disasm</option>
                         <option value="memdump">Memory</option>
                     </select>
+                    {#if leftPanelType === 'disasm'}
                     <div class="memory-controls left-disasm-controls">
-                        <input type="text" id="disasmAddress" placeholder="0000" maxlength="4" value="">
-                        <button id="btnDisasmGo" title="Go to address">Go</button>
-                        <button id="btnDisasmPC" title="Go to current PC">PC</button>
-                        <button id="btnDisasmPgUp" title="Navigate Back (Alt+Left)">&#9664;</button>
-                        <button id="btnDisasmPgDn" title="Navigate Forward (Alt+Right)">&#9654;</button>
-                        <label class="disasm-option" title="Show T-states for each instruction"><input type="checkbox" id="chkShowTstates">T-states</label>
-                        <button id="btnDisasmExport" title="Export visible disassembly">Export</button>
-                        <button id="btnDisasmExportRange" title="Export address range">Export...</button>
+                        <input type="text" placeholder="0000" maxlength="4" bind:value={disasmAddrInput} onkeydown={(e) => onEnter(e, goToDisasmAddress)}>
+                        <button onclick={goToDisasmAddress} title="Go to address">Go</button>
+                        <button onclick={goToPC} title="Go to current PC">PC</button>
+                        <button onclick={() => { if (disasmLines.length > 0) { disasmViewAddress = (disasmLines[0].addr - 32) & 0xffff; followPC = false; updateDisassemblyView(); } }} title="Navigate Back (Alt+Left)">&#9664;</button>
+                        <button onclick={() => { if (disasmLines.length > 0) { disasmViewAddress = disasmLines[disasmLines.length - 1].addr; followPC = false; updateDisassemblyView(); } }} title="Navigate Forward (Alt+Right)">&#9654;</button>
+                        <label class="disasm-option" title="Show T-states for each instruction"><input type="checkbox" bind:checked={showTstates} onchange={() => updateDisassemblyView()}>T-states</label>
                     </div>
-                    <div class="memory-controls left-memdump-controls" style="display:none">
-                        <input type="text" id="leftMemAddress" placeholder="0000" maxlength="4" value="0000">
-                        <button id="btnLeftMemGo" title="Go to address">Go</button>
-                        <button id="btnLeftMemPC" title="Go to PC">PC</button>
-                        <button id="btnLeftMemSP" title="Go to SP">SP</button>
-                        <button id="btnLeftMemHL" title="Go to HL">HL</button>
-                        <button id="btnLeftMemPgUp" title="Page up">&#9650;</button>
-                        <button id="btnLeftMemPgDn" title="Page down">&#9660;</button>
+                    {:else}
+                    <div class="memory-controls left-memdump-controls">
+                        <input type="text" placeholder="0000" maxlength="4" bind:value={leftMemAddrInput} onkeydown={(e) => onEnter(e, goToLeftMemAddress)}>
+                        <button onclick={goToLeftMemAddress} title="Go to address">Go</button>
+                        <button onclick={() => { leftMemViewAddress = regPC; updateLeftMemoryView(); leftMemAddrInput = hex16(regPC); }} title="Go to PC">PC</button>
+                        <button onclick={() => { leftMemViewAddress = regSP; updateLeftMemoryView(); leftMemAddrInput = hex16(regSP); }} title="Go to SP">SP</button>
+                        <button onclick={() => { leftMemViewAddress = regHL; updateLeftMemoryView(); leftMemAddrInput = hex16(regHL); }} title="Go to HL">HL</button>
+                        <button onclick={() => { leftMemViewAddress = (leftMemViewAddress - MEMORY_LINES * BYTES_PER_LINE) & 0xffff; updateLeftMemoryView(); leftMemAddrInput = hex16(leftMemViewAddress); }} title="Page up">&#9650;</button>
+                        <button onclick={() => { leftMemViewAddress = (leftMemViewAddress + MEMORY_LINES * BYTES_PER_LINE) & 0xffff; updateLeftMemoryView(); leftMemAddrInput = hex16(leftMemViewAddress); }} title="Page down">&#9660;</button>
                     </div>
+                    {/if}
                 </div>
-                <div class="disassembly-view" id="disassemblyView"></div>
-                <div class="memory-view" id="leftMemoryView" style="display:none"></div>
-                <div class="bookmarks-bar" id="disasmBookmarks">
-                    <span class="bookmarks-label">Bookmarks:</span>
-                    <button class="bookmark-btn" data-index="0" title="Click: go, Right-click: set">-</button>
-                    <button class="bookmark-btn" data-index="1" title="Click: go, Right-click: set">-</button>
-                    <button class="bookmark-btn" data-index="2" title="Click: go, Right-click: set">-</button>
-                    <button class="bookmark-btn" data-index="3" title="Click: go, Right-click: set">-</button>
-                    <button class="bookmark-btn" data-index="4" title="Click: go, Right-click: set">-</button>
-                </div>
-                <div class="memory-search inline left-memory-search" style="display:none">
-                    <div class="search-row">
-                        <span class="search-label">Search:</span>
-                        <input type="text" id="leftMemSearchInput">
-                        <select id="leftMemSearchType">
-                            <option value="hex">Hex</option>
-                            <option value="dec">Dec</option>
-                            <option value="text">Text</option>
-                        </select>
-                        <button id="btnLeftMemSearch" title="Find bytes in memory">Find</button>
-                        <button id="btnLeftMemSearchNext" title="Find next occurrence">Next</button>
-                        <div class="search-options">
-                            <label class="search-option"><input type="checkbox" id="chkLeftSearchCase"> Case</label>
-                            <label class="search-option"><input type="checkbox" id="chkLeftSearch7bit"> +128</label>
+                {#if leftPanelType === 'disasm'}
+                <div class="disassembly-view">
+                    {#each disasmLines as line}
+                        <!-- svelte-ignore a11y_click_events_have_key_events -->
+                        <!-- svelte-ignore a11y_no_static_element_interactions -->
+                        <div class="disasm-line" class:current={line.addr === regPC} class:breakpoint={hasBpAt(line.addr)} onclick={() => toggleBreakpointAtAddr(line.addr)}>
+                            <span class="disasm-bp" class:active={hasBpAt(line.addr)}></span>
+                            <span class="disasm-addr">{hex16(line.addr)}</span>
+                            <span class="disasm-bytes">{line.bytes.map(b => hex8(b)).join(' ')}</span>
+                            <span class="disasm-mnemonic">{line.mnemonic}</span>
+                            {#if line.timing}<span class="disasm-tstates">{line.timing}</span>{/if}
                         </div>
-                    </div>
-                    <div class="search-results" id="leftSearchResults"></div>
+                    {/each}
                 </div>
+                {:else}
+                <div class="memory-view">
+                    {#each leftMemLines as line}
+                        <div class="memory-line">
+                            <span class="memory-addr">{hex16(line.addr)}</span>
+                            <span class="memory-hex">{#each line.bytes as b}<span class="memory-byte">{hex8(b.val)}</span>{/each}</span>
+                            <span class="memory-ascii">{line.ascii}</span>
+                        </div>
+                    {/each}
+                </div>
+                {/if}
                 <div class="debugger-controls left-debugger-controls">
-                    <button id="btnStepInto" title="Step Into (F7)">Step Into</button>
-                    <button id="btnStepOver" title="Step Over (F8)">Step Over</button>
-                    <button id="btnRunTo" title="Run to Cursor (F4)">To Cursor</button>
-                    <button id="btnRunToInt" title="Run to INT">To INT</button>
-                    <button id="btnRunToRet" title="Run to RET">To RET</button>
-                    <input type="text" id="tstatesInput" class="tstates-input" placeholder="T" maxlength="8" value="1000" title="Number of T-states to run">
-                    <button id="btnRunTstates" title="Run specified T-states">Tstates</button>
-                    <label style="margin-left: 8px; font-size: 11px;" title="Add separator comment before each step"><input type="checkbox" id="chkAutoComment"> comm</label>
-                    <label style="margin-left: 8px; font-size: 11px;" title="Auto-scroll disassembly to follow PC"><input type="checkbox" id="chkFollowPC" checked> follow</label>
+                    <button onclick={stepInto} title="Step Into (F7)">Step Into</button>
+                    <button onclick={stepOver} title="Step Over (F8)">Step Over</button>
+                    <button onclick={runToCursor} title="Run to Cursor (F4)">To Cursor</button>
+                    <button onclick={runToInt} title="Run to INT">To INT</button>
+                    <button onclick={runToRet} title="Run to RET">To RET</button>
+                    <input type="text" class="tstates-input" placeholder="T" maxlength="8" bind:value={tstatesInput} onkeydown={(e) => onEnter(e, runTstates)} title="Number of T-states to run">
+                    <button onclick={runTstates} title="Run specified T-states">Tstates</button>
+                    <label style="margin-left: 8px; font-size: 11px;" title="Auto-scroll disassembly to follow PC"><input type="checkbox" bind:checked={followPC}> follow</label>
                 </div>
             </div>
             <div class="right-column">
                 <div class="registers-row">
                     <div class="reg-group">
                         <h4>Regs</h4>
-                        <div class="registers-grid" id="mainRegisters"></div>
-                        <div class="registers-grid" id="altRegisters"></div>
-                        <div class="registers-grid" id="ixiyRegisters"></div>
+                        <div class="registers-grid">
+                            <span class="register-item"><span class="register-name">AF</span> <span class="register-value">{hex16(regAF)}</span></span>
+                            <span class="register-item"><span class="register-name">BC</span> <span class="register-value">{hex16(regBC)}</span></span>
+                            <span class="register-item"><span class="register-name">DE</span> <span class="register-value">{hex16(regDE)}</span></span>
+                            <span class="register-item"><span class="register-name">HL</span> <span class="register-value">{hex16(regHL)}</span></span>
+                        </div>
+                        <div class="registers-grid">
+                            <span class="register-item"><span class="register-name">AF'</span> <span class="register-value">{hex16(regAF_)}</span></span>
+                            <span class="register-item"><span class="register-name">BC'</span> <span class="register-value">{hex16(regBC_)}</span></span>
+                            <span class="register-item"><span class="register-name">DE'</span> <span class="register-value">{hex16(regDE_)}</span></span>
+                            <span class="register-item"><span class="register-name">HL'</span> <span class="register-value">{hex16(regHL_)}</span></span>
+                        </div>
+                        <div class="registers-grid">
+                            <span class="register-item"><span class="register-name">IX</span> <span class="register-value">{hex16(regIX)}</span></span>
+                            <span class="register-item"><span class="register-name">IY</span> <span class="register-value">{hex16(regIY)}</span></span>
+                        </div>
                     </div>
                     <div class="reg-group">
                         <h4>System</h4>
-                        <div class="registers-grid" id="indexRegisters"></div>
-                        <div class="registers-grid" id="statusRegisters"></div>
+                        <div class="registers-grid">
+                            <span class="register-item"><span class="register-name">SP</span> <span class="register-value">{hex16(regSP)}</span></span>
+                            <span class="register-item"><span class="register-name">PC</span> <span class="register-value">{hex16(regPC)}</span></span>
+                        </div>
+                        <div class="registers-grid">
+                            <span class="register-item"><span class="register-name">I</span> <span class="register-value">{hex8(regI)}</span></span>
+                            <span class="register-item"><span class="register-name">R</span> <span class="register-value">{hex8(regR)}</span></span>
+                            <span class="register-item"><span class="register-name">IM</span> <span class="register-value">{regIM}</span></span>
+                            <span class="register-item"><span class="register-name">IFF</span> <span class="register-value">{regIFF1 ? '1' : '0'}/{regIFF2 ? '1' : '0'}</span></span>
+                        </div>
+                        <div class="registers-grid">
+                            <span class="register-item"><span class="register-name">T</span> <span class="register-value">{regTstates}</span></span>
+                        </div>
                         <div class="flags-label">Flags</div>
-                        <div class="flags-display" id="flagsDisplay"></div>
+                        <div class="flags-display">
+                            {#each FLAG_DEFS as f}
+                                <span class="flag-item" class:set={!!(flags & f.bit)} title="{f.name}">{f.name}</span>
+                            {/each}
+                        </div>
                     </div>
                     <div class="stack-pages-row">
                         <div class="reg-group">
                             <h4>Stack</h4>
-                            <div class="stack-view" id="stackView"></div>
+                            <div class="stack-view">
+                                {#each stackEntries as entry}
+                                    <div class="stack-entry" class:current={entry.current}>
+                                        <span class="stack-addr">{hex16(entry.addr)}</span>
+                                        <span class="stack-value">{hex16(entry.value)}</span>
+                                    </div>
+                                {/each}
+                            </div>
                         </div>
-                        <div class="reg-group" id="pagesGroup" style="display: none;">
+                        {#if is128k}
+                        <div class="reg-group">
                             <h4>Pages</h4>
-                            <div class="registers-grid vertical" id="pagesInfo"></div>
+                            <div class="registers-grid vertical">
+                                <span class="register-item"><span class="register-name">RAM</span> <span class="register-value">{pagingRamBank}</span></span>
+                                <span class="register-item"><span class="register-name">ROM</span> <span class="register-value">{pagingRomBank}</span></span>
+                                <span class="register-item"><span class="register-name">SCR</span> <span class="register-value">{pagingScreenBank}</span></span>
+                            </div>
                         </div>
+                        {/if}
                     </div>
                 </div>
-                <div class="memory-section memory-panel" id="rightPanel">
+                <div class="memory-section memory-panel">
                     <div class="memory-header">
-                        <select id="rightPanelType" class="panel-type-select" title="Panel type">
+                        <select class="panel-type-select" title="Panel type" bind:value={rightPanelType}>
                             <option value="memdump">Memory</option>
                             <option value="disasm">Disasm</option>
-                            <option value="calc">Calculator</option>
                         </select>
+                        {#if rightPanelType === 'memdump'}
                         <div class="memory-controls right-memdump-controls">
-                            <input type="text" id="memoryAddress" placeholder="0000" maxlength="4" value="0000">
-                            <button id="btnMemoryGo" title="Go to address">Go</button>
-                            <button id="btnMemoryPC" title="Go to PC">PC</button>
-                            <button id="btnMemorySP" title="Go to SP">SP</button>
-                            <button id="btnMemoryHL" title="Go to HL">HL</button>
-                            <button id="btnMemoryPgUp" title="Page up">&#9650;</button>
-                            <button id="btnMemoryPgDn" title="Page down">&#9660;</button>
-                            <button id="btnMemorySnap" title="Snapshot memory for diff">Snap</button>
-                            <button id="btnMemoryClearSnap" title="Clear snapshot" style="display:none">Clear</button>
-                            <label class="memory-option" title="Allow editing ROM area"><input type="checkbox" id="chkRomEdit">Edit ROM</label>
+                            <input type="text" placeholder="0000" maxlength="4" bind:value={memAddrInput} onkeydown={(e) => onEnter(e, goToMemAddress)}>
+                            <button onclick={goToMemAddress} title="Go to address">Go</button>
+                            <button onclick={memGoToPC} title="Go to PC">PC</button>
+                            <button onclick={memGoToSP} title="Go to SP">SP</button>
+                            <button onclick={memGoToHL} title="Go to HL">HL</button>
+                            <button onclick={memPgUp} title="Page up">&#9650;</button>
+                            <button onclick={memPgDn} title="Page down">&#9660;</button>
                         </div>
-                        <div class="memory-controls right-disasm-controls" style="display:none">
-                            <input type="text" id="rightDisasmAddress" placeholder="0000" maxlength="4" value="">
-                            <button id="btnRightDisasmGo" title="Go to address">Go</button>
-                            <button id="btnRightDisasmPC" title="Go to current PC">PC</button>
-                            <button id="btnRightDisasmPgUp" title="Navigate Back">&#9664;</button>
-                            <button id="btnRightDisasmPgDn" title="Navigate Forward">&#9654;</button>
-                            <label class="disasm-option" title="Show T-states for each instruction"><input type="checkbox" id="chkRightShowTstates">T-states</label>
+                        {:else}
+                        <div class="memory-controls right-disasm-controls">
+                            <input type="text" placeholder="0000" maxlength="4" bind:value={rightDisasmAddrInput} onkeydown={(e) => onEnter(e, goToRightDisasmAddress)}>
+                            <button onclick={goToRightDisasmAddress} title="Go to address">Go</button>
+                            <button onclick={() => { rightDisasmViewAddress = regPC; updateRightDisassemblyView(); }} title="Go to current PC">PC</button>
                         </div>
+                        {/if}
                     </div>
-                    <div class="memory-view" id="memoryView"></div>
-                    <div class="disassembly-view" id="rightDisassemblyView" style="display:none"></div>
-                    <div class="calculator-view" id="rightCalculatorView" style="display:none">
-                        <div class="calc-wrapper">
-                        <div class="calc-top-row">
-                        <div class="calc-container">
-                            <div class="calc-display">
-                                <div class="calc-input-row">
-                                    <select id="calcInputBase" class="calc-base-select">
-                                        <option value="16">HEX</option>
-                                        <option value="10">DEC</option>
-                                        <option value="8">OCT</option>
-                                        <option value="2">BIN</option>
-                                    </select>
-                                    <input type="text" id="calcInput" class="calc-input" value="0" spellcheck="false">
-                                </div>
-                                <div class="calc-output-row">
-                                    <span class="calc-label dec">DEC</span>
-                                    <span class="calc-value" id="calcDec">0</span>
-                                    <span class="calc-signed" id="calcSigned"></span>
-                                </div>
-                                <div class="calc-output-row">
-                                    <span class="calc-label hex">HEX</span>
-                                    <span class="calc-value" id="calcHex">0</span>
-                                </div>
-                                <div class="calc-output-row">
-                                    <span class="calc-label oct">OCT</span>
-                                    <span class="calc-value" id="calcOct">0</span>
-                                </div>
-                                <div class="calc-output-row">
-                                    <span class="calc-label bin">BIN</span>
-                                    <span class="calc-value bin-value" id="calcBin">0</span>
-                                </div>
-                                <div class="calc-output-row ascii-row">
-                                    <span class="calc-label ascii">ASCII</span>
-                                    <span class="calc-value" id="calcAscii"></span>
-                                </div>
+                    {#if rightPanelType === 'memdump'}
+                    <div class="memory-view">
+                        {#each memLines as line}
+                            <div class="memory-line">
+                                <span class="memory-addr">{hex16(line.addr)}</span>
+                                <span class="memory-hex">{#each line.bytes as b}<span class="memory-byte">{hex8(b.val)}</span>{/each}</span>
+                                <span class="memory-ascii">{line.ascii}</span>
                             </div>
-                            <div class="calc-buttons">
-                                <div class="calc-row">
-                                    <button class="calc-btn mode" id="calcBitSize" title="Toggle bit size (8/16/32 bits)">u16</button>
-                                    <button class="calc-btn op" data-op="and" title="Bitwise AND: A and B">and</button>
-                                    <button class="calc-btn op" data-op="or" title="Bitwise OR: A or B">or</button>
-                                    <button class="calc-btn op" data-op="not" title="Bitwise NOT: invert all bits">not</button>
-                                    <button class="calc-btn op" data-op="xor" title="Bitwise XOR: A xor B">xor</button>
-                                </div>
-                                <div class="calc-row">
-                                    <button class="calc-btn func" data-op="inc" title="Increment: add 1">inc</button>
-                                    <button class="calc-btn func" data-op="dec" title="Decrement: subtract 1">dec</button>
-                                    <button class="calc-btn func" data-op="lsl" title="Logical Shift Left: shift bits left, fill with 0">lsl</button>
-                                    <button class="calc-btn func" data-op="lsr" title="Logical Shift Right: shift bits right, fill with 0">lsr</button>
-                                    <button class="calc-btn func" data-op="asr" title="Arithmetic Shift Right: shift right, preserve sign bit">asr</button>
-                                    <button class="calc-btn func" data-op="rand" title="Random: generate random number">rand</button>
-                                </div>
-                                <div class="calc-row">
-                                    <button class="calc-btn paren" data-char="(">(</button>
-                                    <button class="calc-btn paren" data-char=")">)</button>
-                                    <button class="calc-btn func" data-op="rol" title="Rotate Left: shift left, top bit wraps to bottom">rol</button>
-                                    <button class="calc-btn func" data-op="ror" title="Rotate Right: shift right, bottom bit wraps to top">ror</button>
-                                    <button class="calc-btn op" data-op="mod" title="Modulo: remainder after division">mod</button>
-                                    <button class="calc-btn op" data-op="/" title="Divide: integer division">/</button>
-                                </div>
-                                <div class="calc-row">
-                                    <button class="calc-btn hex-digit" data-char="A">A</button>
-                                    <button class="calc-btn hex-digit" data-char="B">B</button>
-                                    <button class="calc-btn digit" data-char="7">7</button>
-                                    <button class="calc-btn digit" data-char="8">8</button>
-                                    <button class="calc-btn digit" data-char="9">9</button>
-                                    <button class="calc-btn op" data-op="*" title="Multiply">*</button>
-                                </div>
-                                <div class="calc-row">
-                                    <button class="calc-btn hex-digit" data-char="C">C</button>
-                                    <button class="calc-btn hex-digit" data-char="D">D</button>
-                                    <button class="calc-btn digit" data-char="4">4</button>
-                                    <button class="calc-btn digit" data-char="5">5</button>
-                                    <button class="calc-btn digit" data-char="6">6</button>
-                                    <button class="calc-btn op" data-op="-" title="Subtract">-</button>
-                                </div>
-                                <div class="calc-row">
-                                    <button class="calc-btn hex-digit" data-char="E">E</button>
-                                    <button class="calc-btn hex-digit" data-char="F">F</button>
-                                    <button class="calc-btn digit" data-char="1">1</button>
-                                    <button class="calc-btn digit" data-char="2">2</button>
-                                    <button class="calc-btn digit" data-char="3">3</button>
-                                    <button class="calc-btn op" data-op="+" title="Add">+</button>
-                                </div>
-                                <div class="calc-row">
-                                    <button class="calc-btn clear" id="calcClear" title="Clear: reset to 0">C</button>
-                                    <button class="calc-btn clear" id="calcDel" title="Delete: remove last digit">DEL</button>
-                                    <button class="calc-btn digit" data-char="0">0</button>
-                                    <button class="calc-btn digit" data-char="0" id="calcDot" style="visibility:hidden">.</button>
-                                    <button class="calc-btn func" id="calcNegate" title="Negate: two's complement (flip sign)">+/-</button>
-                                    <button class="calc-btn equals" id="calcEquals" title="Equals: calculate result">=</button>
-                                </div>
+                        {/each}
+                    </div>
+                    {:else}
+                    <div class="disassembly-view">
+                        {#each rightDisasmLines as line}
+                            <div class="disasm-line" class:current={line.addr === regPC}>
+                                <span class="disasm-addr">{hex16(line.addr)}</span>
+                                <span class="disasm-bytes">{line.bytes.map(b => hex8(b)).join(' ')}</span>
+                                <span class="disasm-mnemonic">{line.mnemonic}</span>
                             </div>
-                        </div>
-                        <div class="calc-log">
-                            <div class="calc-log-header">
-                                <span>History</span>
-                                <button id="calcLogClear" title="Clear history">&times;</button>
-                            </div>
-                            <div class="calc-log-content" id="calcLogContent"></div>
-                        </div>
-                        </div>
-                        <div class="calc-bits-panel" id="calcBitsPanel">
-                            <div class="calc-bits-labels" id="calcBitsLabels"></div>
-                            <div class="calc-bits-grid" id="calcBitsGrid"></div>
-                        </div>
-                        </div>
+                        {/each}
                     </div>
-                    <div class="bookmarks-bar" id="memoryBookmarks">
-                        <span class="bookmarks-label">Bookmarks:</span>
-                        <button class="bookmark-btn" data-index="0" title="Click: go, Right-click: set">-</button>
-                        <button class="bookmark-btn" data-index="1" title="Click: go, Right-click: set">-</button>
-                        <button class="bookmark-btn" data-index="2" title="Click: go, Right-click: set">-</button>
-                        <button class="bookmark-btn" data-index="3" title="Click: go, Right-click: set">-</button>
-                        <button class="bookmark-btn" data-index="4" title="Click: go, Right-click: set">-</button>
-                    </div>
-                    <div class="debugger-controls right-debugger-controls" style="display:none">
-                        <button id="btnRightStepInto" title="Step Into (F7)">Step Into</button>
-                        <button id="btnRightStepOver" title="Step Over (F8)">Step Over</button>
-                        <button id="btnRightRunTo" title="Run to Cursor (F4)">To Cursor</button>
-                        <button id="btnRightRunToInt" title="Run to INT">To INT</button>
-                        <button id="btnRightRunToRet" title="Run to RET">To RET</button>
-                        <input type="text" id="rightTstatesInput" class="tstates-input" placeholder="T" maxlength="8" value="1000">
-                        <button id="btnRightRunTstates" title="Run T-States">Tstates</button>
-                    </div>
+                    {/if}
                     <div class="memory-search inline right-memory-search">
                         <div class="search-row">
                             <span class="search-label">Search:</span>
-                            <input type="text" id="memSearchInput">
-                            <select id="memSearchType">
+                            <input type="text" bind:value={memSearchInput} onkeydown={(e) => onEnter(e, doMemSearch)}>
+                            <select bind:value={memSearchType}>
                                 <option value="hex">Hex</option>
                                 <option value="dec">Dec</option>
                                 <option value="text">Text</option>
                             </select>
-                            <button id="btnMemSearch" title="Find bytes in memory">Find</button>
-                            <button id="btnMemSearchNext" title="Find next occurrence">Next</button>
-                            <div class="search-options">
-                                <label class="search-option"><input type="checkbox" id="chkSearchCase"> Case</label>
-                                <label class="search-option"><input type="checkbox" id="chkSearch7bit"> +128</label>
-                            </div>
+                            <button onclick={doMemSearch} title="Find bytes in memory">Find</button>
+                            <button onclick={doMemSearchNext} title="Find next occurrence">Next</button>
                         </div>
-                        <div class="search-results" id="searchResults"></div>
+                        {#if memSearchResults}<div class="search-results">{memSearchResults}</div>{/if}
                     </div>
                 </div>
             </div>
         </div>
         <div class="panel-tabs">
             <div class="panel-tab-bar">
-                <button class="panel-tab-btn active" data-panel="breakpoints" title="Breakpoints and watchpoints">Breakpoints</button>
-                <button class="panel-tab-btn" data-panel="labels" title="Address labels">Labels</button>
-                <button class="panel-tab-btn" data-panel="watches" title="Memory watches">Watches</button>
-                <button class="panel-tab-btn" data-panel="tools" title="POKE search, Auto-Map, XRefs, Text scan">Tools</button>
-                <button class="panel-tab-btn" data-panel="trace" title="Execution trace history">Trace</button>
+                {#each bottomTabs as tab}
+                    <button class="panel-tab-btn" class:active={activeBottomTab === tab.id} onclick={() => activeBottomTab = tab.id} title={tab.title}>{tab.label}</button>
+                {/each}
             </div>
             <!-- Breakpoints Panel -->
-            <div class="panel-tab-content active" id="panel-breakpoints">
+            <div class="panel-tab-content" class:active={activeBottomTab === 'breakpoints'}>
                 <div class="bp-add-form" style="margin-bottom: 5px;">
-                    <select id="triggerType" title="Trigger type">
+                    <select bind:value={triggerTypeInput} title="Trigger type">
                         <option value="exec">Exec</option>
                         <option value="read">Read</option>
                         <option value="write">Write</option>
@@ -294,169 +698,50 @@
                         <option value="port_out">Port OUT</option>
                         <option value="port_io">Port I/O</option>
                     </select>
-                    <input type="text" id="triggerAddrInput" placeholder="ADDR" maxlength="15" title="Examples: 4000, 4000-4FFF, 5:C000, FE&FF">
-                    <input type="text" id="triggerCondInput" placeholder="if..." maxlength="30" title="Condition: A==0, val==FF, port&FE==FE">
-                    <input type="number" id="triggerSkipInput" placeholder="skip" min="0" value="0" title="Skip count: number of hits to skip before breaking" style="width: 45px;">
-                    <button id="btnAddTrigger" title="Add breakpoint/watchpoint">+</button>
-                    <button id="btnClearTriggers" title="Clear all triggers">Clear</button>
+                    <input type="text" bind:value={triggerAddrInput} placeholder="ADDR" maxlength="15" title="Examples: 4000, 4000-4FFF, 5:C000, FE&FF" onkeydown={(e) => onEnter(e, addTrigger)}>
+                    <input type="text" bind:value={triggerCondInput} placeholder="if..." maxlength="30" title="Condition: A==0, val==FF, port&FE==FE">
+                    <button onclick={addTrigger} title="Add breakpoint/watchpoint">+</button>
+                    <button onclick={clearTriggers} title="Clear all triggers">Clear</button>
                 </div>
-                <div class="breakpoint-list trigger-list" id="triggerList">
-                    <div class="no-breakpoints">No breakpoints</div>
+                <div class="breakpoint-list trigger-list">
+                    {#if triggerList.length === 0}
+                        <div class="no-breakpoints">No breakpoints</div>
+                    {:else}
+                        {#each triggerList as trigger, i}
+                            <div class="trigger-item" class:disabled={trigger.disabled}>
+                                <span class="trigger-type">{trigger.type || 'exec'}</span>
+                                <span class="trigger-addr">{trigger.addrStr || hex16(trigger.address ?? 0)}</span>
+                                {#if trigger.condition}<span class="trigger-cond">if {trigger.condition}</span>{/if}
+                                <button class="trigger-toggle" onclick={() => toggleTrigger(i)} title="Enable/disable">{trigger.disabled ? '○' : '●'}</button>
+                                <button class="trigger-remove" onclick={() => removeTrigger(i)} title="Remove">&times;</button>
+                            </div>
+                        {/each}
+                    {/if}
                 </div>
             </div>
             <!-- Labels Panel -->
-            <div class="panel-tab-content" id="panel-labels">
-                <div class="bp-add-form" style="margin-bottom: 5px;">
-                    <select id="labelDisplayMode" class="disasm-select" title="Label display mode">
-                        <option value="addr">Addr</option>
-                        <option value="label">Label</option>
-                        <option value="both" selected>Both</option>
-                    </select>
-                    <label class="rom-labels-toggle" title="Show ROM labels"><input type="checkbox" id="chkShowRomLabels" checked>ROM</label>
-                    <input type="text" id="labelFilterInput" placeholder="Filter..." maxlength="20" style="width: 80px;">
-                    <button id="btnAddLabel" title="Add label">+</button>
-                    <button id="btnExportLabels" title="Export labels to file">Export</button>
-                    <button id="btnImportLabels" title="Import labels from file">Import</button>
-                    <button id="btnClearLabels" title="Clear user labels">Clear</button>
-                    <input type="file" id="labelFileInput" accept=".json,.txt" style="display:none">
-                </div>
-                <div class="breakpoint-list labels-list" id="labelsList">
-                    <div class="no-breakpoints">No labels</div>
+            <div class="panel-tab-content" class:active={activeBottomTab === 'labels'}>
+                <div class="breakpoint-list labels-list">
+                    <div class="no-breakpoints">Labels — not yet wired</div>
                 </div>
             </div>
             <!-- Watches Panel -->
-            <div class="panel-tab-content" id="panel-watches">
-                <div class="watches-controls">
-                    <input type="text" id="watchAddrInput" placeholder="[P:]Addr" maxlength="7" title="Address (hex), e.g. 4000 or 5:C000">
-                    <input type="text" id="watchNameInput" placeholder="Name" maxlength="16" title="Watch name (optional)">
-                    <button id="btnWatchAdd" title="Add memory watch (max 10)">+</button>
-                    <button id="btnWatchClear" title="Clear all watches">Clear</button>
+            <div class="panel-tab-content" class:active={activeBottomTab === 'watches'}>
+                <div class="breakpoint-list">
+                    <div class="no-breakpoints">Watches — not yet wired</div>
                 </div>
-                <div class="watches-list" id="watchesList"></div>
             </div>
             <!-- Tools Panel -->
-            <div class="panel-tab-content" id="panel-tools">
-                <div class="tools-row">
-                    <span class="search-label">POKE:</span>
-                    <button id="btnPokeSnap" title="Take snapshot">Snap</button>
-                    <select id="pokeSearchMode">
-                        <option value="dec1">-1</option>
-                        <option value="inc1">+1</option>
-                        <option value="decreased">Decreased</option>
-                        <option value="increased">Increased</option>
-                        <option value="changed">Changed</option>
-                        <option value="unchanged">Unchanged</option>
-                        <option value="equals">Equals</option>
-                    </select>
-                    <input type="text" id="pokeSearchValue" placeholder="Val" maxlength="5" style="width:40px;display:none">
-                    <button id="btnPokeSearch" title="Search candidates">Search</button>
-                    <button id="btnPokeReset" title="Reset search">Reset</button>
-                    <span id="pokeStatus" class="poke-status"></span>
-                    <div class="poke-results" id="pokeResults"></div>
+            <div class="panel-tab-content" class:active={activeBottomTab === 'tools'}>
+                <div class="breakpoint-list">
+                    <div class="no-breakpoints">Tools — not yet wired</div>
                 </div>
-                <div class="tools-row">
-                    <span class="search-label">Auto-Map:</span>
-                    <label class="search-option"><input type="checkbox" id="chkAutoMap"> Track</label>
-                    <button id="btnAutoMapSnap" title="Capture current state for export (registers, memory)">Snap</button>
-                    <button id="btnAutoMapApply" title="Apply tracked regions">Apply</button>
-                    <button id="btnAutoMapClear" title="Clear tracking data">Clear</button>
-                    <span id="autoMapStats" class="automap-stats"></span>
-                    <button id="btnClearRegions" title="Clear all marked regions">Clr Regions</button>
-                    <button id="btnMemoryMap" title="Show memory map visualization">Map</button>
-                </div>
-                <div class="tools-row">
-                    <span class="search-label">XRefs:</span>
-                    <button id="btnXrefScan" title="Scan visible range for cross-references">Scan</button>
-                    <button id="btnXrefScanAll" title="Scan full 64KB memory">Scan All</button>
-                    <button id="btnXrefClear" title="Clear all cross-references">Clear</button>
-                    <label class="search-option"><input type="checkbox" id="chkXrefRuntime"> Runtime</label>
-                    <span id="xrefStats" class="automap-stats"></span>
-                </div>
-                <div class="tools-row">
-                    <span class="search-label">Text:</span>
-                    <button id="btnTextScan" title="Scan memory for text strings">Scan</button>
-                    <select id="textScanMode" title="Scan mode">
-                        <option value="all">All strings</option>
-                        <option value="dict">Dictionary</option>
-                        <option value="custom">Custom</option>
-                    </select>
-                    <input type="text" id="textScanCustom" placeholder="Search text..." style="width:80px;display:none">
-                    <label class="search-option" title="Minimum string length"><input type="number" id="textScanMinLen" value="4" min="2" max="20" style="width:35px"> min</label>
-                    <label class="search-option" title="Include ROM area (0000-3FFF)"><input type="checkbox" id="textScanROM"> ROM</label>
-                    <label class="search-option" title="Scan all 128K RAM banks"><input type="checkbox" id="textScanAllBanks"> All banks</label>
-                    <select id="textScanMax" title="Max results to show">
-                        <option value="10">10</option>
-                        <option value="25">25</option>
-                        <option value="50">50</option>
-                        <option value="100">100</option>
-                        <option value="0">All</option>
-                    </select>
-                    <span id="textScanStatus" class="automap-stats"></span>
-                </div>
-                <div class="tools-row" id="textScanPagination" style="display:none">
-                    <button id="textScanPrev" title="Previous page">&lt;</button>
-                    <span id="textScanPage">Page 1/1</span>
-                    <button id="textScanNext" title="Next page">&gt;</button>
-                </div>
-                <div class="text-scan-results" id="textScanResults"></div>
             </div>
             <!-- Trace Panel -->
-            <div class="panel-tab-content" id="panel-trace">
-                <div class="trace-controls">
-                    <div class="trace-row">
-                        <label class="search-option"><input type="checkbox" id="chkTraceEnabled" checked> Step</label>
-                        <label class="search-option"><input type="checkbox" id="chkTraceRuntime"> Runtime</label>
-                        <button id="btnTraceBack" title="Step back in history (Alt+&#8592;)">&#9664;</button>
-                        <button id="btnTraceForward" title="Step forward in history (Alt+&#8594;)">&#9654;</button>
-                        <button id="btnTraceLive" title="Return to live view">Live</button>
-                        <button id="btnTraceClear" title="Clear trace history">Clear</button>
-                        <span id="traceStatus" class="automap-stats"></span>
-                    </div>
-                    <div class="trace-row">
-                        <span class="search-label">Export:</span>
-                        <button id="btnTraceExport" title="Export trace to file">Export</button>
-                        <select id="selTraceExportMode" title="Export first or last N entries">
-                            <option value="first" selected>First</option>
-                            <option value="last">Last</option>
-                        </select>
-                        <input type="number" id="txtTraceExportCount" min="0" max="1000000" value="0" style="width:70px" title="Number of entries to export (0=all)">
-                        <span class="search-label">Stop:</span>
-                        <input type="number" id="txtTraceStopAfter" min="0" max="1000000" value="10000" style="width:70px" title="Stop after N entries (0=unlimited)">
-                    </div>
-                    <div class="trace-row">
-                        <span class="search-label">Include:</span>
-                        <label class="search-option"><input type="checkbox" id="chkTraceBytes"> Bytes</label>
-                        <label class="search-option"><input type="checkbox" id="chkTraceAlt"> Alt regs</label>
-                        <label class="search-option"><input type="checkbox" id="chkTraceSys"> Sys regs</label>
-                        <label class="search-option"><input type="checkbox" id="chkTracePorts"> Ports</label>
-                        <label class="search-option"><input type="checkbox" id="chkTraceSkipROM" checked> Skip ROM</label>
-                        <label class="search-option"><input type="checkbox" id="chkTraceCollapseBlock"> Collapse block</label>
-                    </div>
-                    <div class="trace-row">
-                        <span class="search-label">Port I/O:</span>
-                        <label class="search-option"><input type="checkbox" id="chkPortLog"> Log</label>
-                        <select id="selPortLogFilter" title="Filter by direction">
-                            <option value="both">Both</option>
-                            <option value="in">IN only</option>
-                            <option value="out">OUT only</option>
-                        </select>
-                        <button id="btnPortLogExport" title="Export port I/O log">Export</button>
-                        <button id="btnPortLogClear" title="Clear port log">Clear</button>
-                        <span id="portLogStatus" class="automap-stats"></span>
-                    </div>
-                    <div class="trace-row">
-                        <span class="search-label">Port filter:</span>
-                        <input type="text" id="txtPortTraceFilter" placeholder="PORT[&MASK]" maxlength="15"
-                               title="Port spec: FE, 7FFD, FE&FF" style="width:90px">
-                        <button id="btnAddPortFilter" title="Add port to trace filter">+</button>
-                        <button id="btnClearPortFilters" title="Clear all (trace all ports)">Clear</button>
-                        <span id="portFilterStatus" class="automap-stats"></span>
-                    </div>
-                    <div class="breakpoint-list" id="portFilterList" style="max-height:60px">
-                        <div class="no-breakpoints">All ports (no filter)</div>
-                    </div>
+            <div class="panel-tab-content" class:active={activeBottomTab === 'trace'}>
+                <div class="breakpoint-list">
+                    <div class="no-breakpoints">Trace — not yet wired</div>
                 </div>
-                <div class="trace-list" id="traceList"></div>
             </div>
         </div>
     </div><!-- debugger-panel -->
@@ -491,7 +776,6 @@
         gap: 8px;
         flex-wrap: wrap;
         margin-bottom: 4px;
-        justify-content: flex-end;
     }
     .stack-pages-row {
         display: flex;
