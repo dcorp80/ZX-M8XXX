@@ -5,7 +5,8 @@
     import ControlPanel from './ControlPanel.svelte';
     import TabBar from './TabBar.svelte';
 
-    let { emulator }: { emulator: any } = $props();
+    import type { EmulatorController } from '../core/emulator-controller';
+    let { emulator }: { emulator: EmulatorController } = $props();
 </script>
 
 <div class="container">

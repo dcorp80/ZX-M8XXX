@@ -2,19 +2,103 @@ import { mount } from 'svelte'
 import './app.css'
 import App from './App.svelte'
 import { Spectrum } from '../core/spectrum'
+import { EmulatorControllerImpl } from '../core/emulator-controller'
+import { fetchRoms } from '../core/rom-loader'
 
 const canvas = document.getElementById('screen') as HTMLCanvasElement
 const overlayCanvas = document.getElementById('overlayCanvas') as HTMLCanvasElement
 
-const emulator = new Spectrum(canvas, {
+const spectrum = new Spectrum(canvas, {
   machineType: localStorage.getItem('zx-machine-type') || '48k',
   tapeTrapsEnabled: true,
   overlayCanvas,
+  createCanvas: () => document.createElement('canvas'),
 })
 
+const controller = new EmulatorControllerImpl(spectrum)
+
+// Keyboard: UI registers globally, forwards to controller
+// (Focus-guard logic lives here instead of inside Spectrum)
+function shouldIgnoreKey(e: KeyboardEvent): boolean {
+  const tag = (e.target as HTMLElement).tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  if ((e.target as HTMLElement).isContentEditable) return true;
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) return true;
+  if (active && (active as HTMLElement).isContentEditable) return true;
+  return false;
+}
+
+document.addEventListener('keydown', (e) => {
+  if (shouldIgnoreKey(e)) return;
+  controller.handleKeyDown(e);
+});
+
+document.addEventListener('keyup', (e) => {
+  if (shouldIgnoreKey(e)) return;
+  controller.handleKeyUp(e);
+});
+
+// Mount Svelte app immediately (UI shell renders while ROMs load)
 const app = mount(App, {
   target: document.getElementById('ui')!,
-  props: { emulator },
+  props: { emulator: controller },
 })
+
+// ---- Boot sequence ----
+
+async function boot() {
+  const romData = await fetchRoms();
+
+  if (!controller.applyRoms(romData)) {
+    console.error('Required ROM not found in roms/ — ROM selection UI not yet implemented');
+    return;
+  }
+
+  controller.reset();
+  controller.start();
+
+  restoreSettings();
+  setupDeferredAudio();
+}
+
+function restoreSettings() {
+  const s = controller.spectrum; // escape hatch for properties not yet on interface
+  const get = (k: string) => localStorage.getItem(k);
+
+  if (get('zx-beta-disk') !== null) s.betaDiskEnabled = get('zx-beta-disk') === 'true';
+  if (get('zxm8_lateTiming') === 'true') controller.setLateTimings(true);
+  if (get('zx-ay-48k') === 'true') s.ay48kEnabled = true;
+
+  const gp = get('gamepadMapping');
+  if (gp) try { s.gamepadMapping = JSON.parse(gp); } catch {}
+}
+
+function setupDeferredAudio() {
+  const savedEnabled = localStorage.getItem('zx-sound-enabled') !== 'false';
+  if (!savedEnabled) return; // user had sound off — don't init audio at all
+
+  const initOnce = async () => {
+    document.removeEventListener('click', initOnce);
+    document.removeEventListener('keydown', initOnce);
+
+    const audio = controller.initAudio();
+    await audio.start();
+
+    const vol = localStorage.getItem('zx-volume');
+    if (vol !== null) audio.setVolume(parseInt(vol) / 100);
+
+    const stereo = localStorage.getItem('zx-stereo-mode');
+    if (stereo) {
+      controller.spectrum.ay.stereoMode = stereo;
+      controller.spectrum.ay.updateStereoPanning();
+    }
+  };
+
+  document.addEventListener('click', initOnce);
+  document.addEventListener('keydown', initOnce);
+}
+
+boot();
 
 export default app

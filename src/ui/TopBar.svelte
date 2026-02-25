@@ -1,5 +1,6 @@
 <script lang="ts">
-    let { emulator }: { emulator: any } = $props();
+    import type { EmulatorController } from '../core/emulator-controller';
+    let { emulator }: { emulator: EmulatorController } = $props();
 
     function toggleTheme() {
         document.body.classList.toggle('light-theme');

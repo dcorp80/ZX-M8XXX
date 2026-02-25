@@ -6,7 +6,8 @@
     import SettingsTab from './SettingsTab.svelte';
     import ToolsTab from './ToolsTab.svelte';
 
-    let { emulator }: { emulator: any } = $props();
+    import type { EmulatorController } from '../core/emulator-controller';
+    let { emulator }: { emulator: EmulatorController } = $props();
 
     let activeTab = $state('debugger');
     let collapsed = $state(false);

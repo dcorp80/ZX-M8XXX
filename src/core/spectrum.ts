@@ -45,6 +45,7 @@ export class Spectrum {
         this.machineType = options.machineType || '48k';
         this.profile = getMachineProfile(this.machineType);
         this.tapeTrapsEnabled = options.tapeTrapsEnabled !== false;
+        this.createCanvas = options.createCanvas || (() => this.createCanvas());
 
         this.memory = new Memory(this.machineType);
         this.cpu = new Z80(this.memory);
@@ -280,10 +281,7 @@ export class Spectrum {
         this.memory.onWrite = null;
         this.cpu.onFetch = null;
 
-        this.boundKeyDown = this.handleKeyDown.bind(this);
         this.pressedKeys = new Map(); // Track e.code → e.key for proper release
-        this.boundKeyUp = this.handleKeyUp.bind(this);
-        this.keyboardHandlersRegistered = false;
     }
 
     // ========== Initialization ==========
@@ -2362,7 +2360,7 @@ export class Spectrum {
         const changes = this.ula.borderChanges;
         const palette = this.ula.palette;
 
-        const tempCanvas = document.createElement('canvas');
+        const tempCanvas = this.createCanvas();
         tempCanvas.width = dims.width;
         tempCanvas.height = dims.height;
         const tempCtx = tempCanvas.getContext('2d');
@@ -2704,7 +2702,7 @@ export class Spectrum {
 
         // Draw previous frame in grayscale
         if (this.previousFrameBuffer) {
-            const tempCanvas = document.createElement('canvas');
+            const tempCanvas = this.createCanvas();
             tempCanvas.width = dims.width;
             tempCanvas.height = dims.height;
             const tempCtx = tempCanvas.getContext('2d');
@@ -2740,7 +2738,7 @@ export class Spectrum {
             // Get current partial frame from ULA
             const currentFrame = this.ula.frameBuffer;
             if (currentFrame) {
-                const tempCanvas = document.createElement('canvas');
+                const tempCanvas = this.createCanvas();
                 tempCanvas.width = dims.width;
                 tempCanvas.height = dims.height;
                 const tempCtx = tempCanvas.getContext('2d');
@@ -2850,7 +2848,7 @@ export class Spectrum {
         ctx.clearRect(0, 0, this.overlayCanvas.width, this.overlayCanvas.height);
 
         // Create temporary canvas at 1x scale
-        const tempCanvas = document.createElement('canvas');
+        const tempCanvas = this.createCanvas();
         tempCanvas.width = dims.width;
         tempCanvas.height = dims.height;
         const tempCtx = tempCanvas.getContext('2d');
@@ -2900,7 +2898,7 @@ export class Spectrum {
         ctx.clearRect(0, 0, this.overlayCanvas.width, this.overlayCanvas.height);
 
         // Create temporary canvas at 1x scale
-        const tempCanvas = document.createElement('canvas');
+        const tempCanvas = this.createCanvas();
         tempCanvas.width = dims.width;
         tempCanvas.height = dims.height;
         const tempCtx = tempCanvas.getContext('2d');
@@ -2992,13 +2990,6 @@ export class Spectrum {
         this.lastFrameTime = performance.now();
         this.lastRafTime = null;  // Reset for accurate frame timing
         this.frameCount = 0;
-
-        // Register keyboard handlers once
-        if (!this.keyboardHandlersRegistered) {
-            document.addEventListener('keydown', this.boundKeyDown);
-            document.addEventListener('keyup', this.boundKeyUp);
-            this.keyboardHandlersRegistered = true;
-        }
 
         this.scheduleNextFrame();
     }
@@ -4626,23 +4617,6 @@ export class Spectrum {
     // ========== Keyboard Handling ==========
 
     handleKeyDown(e: any) {
-        // Don't capture keys when typing in input fields or contentEditable
-        const tag = e.target.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
-            return;
-        }
-        if ((e.target as HTMLElement).isContentEditable) {
-            return;
-        }
-        // Also check if any input has focus
-        const active = document.activeElement;
-        if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) {
-            return;
-        }
-        if (active && (active as HTMLElement).isContentEditable) {
-            return;
-        }
-        
         // Ignore real keyboard during RZX playback
         if (this.rzxPlaying) {
             return;
@@ -4695,23 +4669,6 @@ export class Spectrum {
     }
 
     handleKeyUp(e: any) {
-        // Don't capture keys when typing in input fields or contentEditable
-        const tag = e.target.tagName;
-        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
-            return;
-        }
-        if ((e.target as HTMLElement).isContentEditable) {
-            return;
-        }
-        // Also check if any input has focus
-        const active = document.activeElement;
-        if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT')) {
-            return;
-        }
-        if (active && (active as HTMLElement).isContentEditable) {
-            return;
-        }
-
         // Use tracked key for proper release (handles shifted chars where e.key changes on release)
         const trackedKey = this.pressedKeys.get(e.code);
         if (trackedKey) {
