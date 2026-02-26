@@ -40,6 +40,11 @@ export interface EmulatorController {
     redraw(): void
     renderToScreen(): void
 
+    // Palette
+    getAvailablePalettes(): any[]
+    applyPalette(id: string): void
+    getCurrentPalette(): string
+
     // Speed
     setSpeed(speed: number): void
 

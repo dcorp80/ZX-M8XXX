@@ -1,6 +1,8 @@
 <script lang="ts">
+    import { onMount } from 'svelte';
     import type { EmulatorController } from '../core/emulator-controller';
     import { MACHINE_PROFILES, DEFAULT_VISIBLE_MACHINES, getMachineTypes } from '../machines/profiles';
+    import { PaletteManager, type Palette } from '../core/palette-manager';
 
     let { emulator }: { emulator: EmulatorController } = $props();
 
@@ -20,6 +22,8 @@
     let overlayMode = $state('normal');
     let invertDisplay = $state(localStorage.getItem('zxm8_invert') === 'true');
     let lateTimings = $state(localStorage.getItem('zxm8_lateTiming') === 'true');
+    let palettes: Palette[] = $state([]);
+    let selectedPalette = $state('default');
 
     // ---- Input state ----
     let kempstonEnabled = $state(false);
@@ -259,6 +263,18 @@
         }
         setVisibleMachines(current);
     }
+
+    function changePalette(e: Event) {
+        const id = (e.target as HTMLSelectElement).value;
+        PaletteManager.apply(id, emulator.spectrum.ula);
+        PaletteManager.save(id);
+        selectedPalette = id;
+    }
+
+    onMount(() => {
+        palettes = PaletteManager.getPalettes();
+        selectedPalette = PaletteManager.getCurrent();
+    });
 </script>
 
 <div class="tab-content" id="tab-settings">
@@ -317,6 +333,14 @@
                     <option value="crisp" selected>Crisp (integer scale)</option>
                     <option value="fit">Fit (keep aspect ratio)</option>
                     <option value="stretch">Stretch (fill screen)</option>
+                </select>
+            </div>
+            <div class="settings-row">
+                <label>Color Palette:</label>
+                <select value={selectedPalette} onchange={changePalette} title="Select color palette">
+                    {#each palettes as palette (palette.id)}
+                        <option value={palette.id}>{palette.name}</option>
+                    {/each}
                 </select>
             </div>
         </div>
