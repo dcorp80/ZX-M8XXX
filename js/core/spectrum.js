@@ -3,8 +3,8 @@
  * @license GPL-3.0
  */
 
+import pako from 'pako';
 import { getMachineProfile, is128kCompat } from './machines.js';
-import { Disassembler } from './disasm.js';
 import { Memory } from './memory.js';
 import { Z80 } from './z80.js';
 import { ULA } from './ula.js';
@@ -56,14 +56,6 @@ export class Spectrum {
         this._lastTapeUpdate = 0;  // T-state of last tape update (for accurate EAR timing)
         this.tapeTrap = new TapeTrapHandler(this.cpu, this.memory, null);
         this.tapeTrap.setEnabled(this.tapeTrapsEnabled);
-        this.tapeTrap.onBlockLoaded = (loadedBlockIndex) => {
-            const tapeTrigger = this.checkTapeBlockTrigger(loadedBlockIndex);
-            if (tapeTrigger) {
-                this.tapeBlockHit = true;
-                this.triggerHit = true;
-                this.lastTrigger = { trigger: tapeTrigger, blockIndex: loadedBlockIndex, type: 'tape_block' };
-            }
-        };
         this.trdosTrap = new TRDOSTrapHandler(this.cpu, this.memory);
         this.trdosTrap.setEnabled(this.tapeTrapsEnabled);  // Use same setting as tape traps
         this.betaDisk = new BetaDisk();  // Beta Disk interface (WD1793)
@@ -108,10 +100,6 @@ export class Spectrum {
         this.onRomLoaded = null;
         this.onError = null;
         this.onBreakpoint = null; // Called when breakpoint hit
-        this.breakpointTStates = 0; // T-states accumulated since last breakpoint
-        this._bpTStatesResetPending = false; // Deferred reset: stays visible until next action
-        this._debugCallStack = []; // Runtime call stack: [{addr, caller}] tracked via SP changes
-        this._debugCallStackMaxDepth = 32; // Max tracked depth
         this.pendingSnapCallback = null; // Called at next frame boundary for safe snapshots
         
         // Speed control (100 = normal, 0 = max)
@@ -142,8 +130,7 @@ export class Spectrum {
         this.accumulatedContention = 0; // Accumulated contention delays for ULA timing
 
         // Unified trigger system - replaces separate breakpoints/watchpoints/port breakpoints
-        // Trigger types: 'exec', 'read', 'write', 'rw', 'port_in', 'port_out', 'port_io',
-        //                'tape_block', 'disk_read', 'disk_sector'
+        // Trigger types: 'exec', 'read', 'write', 'rw', 'port_in', 'port_out', 'port_io'
         this.triggers = [];
         this.triggerHit = false;
         this.lastTrigger = null; // {trigger, addr, val, port, direction}
@@ -164,11 +151,6 @@ export class Spectrum {
         this.lastWatchpoint = null;
         this.onWatchpoint = null;
         this.onPortBreakpoint = null;
-
-        // Tape/disk trigger hit flags
-        this.tapeBlockHit = false;
-        this.diskTriggerHit = false;
-
         this.onInstructionExecuted = null; // Called after each instruction (for xref tracking)
         this.xrefTrackingEnabled = false; // Enable xref runtime tracking
         this.onBeforeStep = null; // Called before each instruction (for trace recording)
@@ -199,22 +181,6 @@ export class Spectrum {
             written: new Map(),    // Written addresses
             currentFetchAddrs: new Set() // Addresses fetched in current instruction
         };
-
-        // Runtime behavior profiler - tracks per-subroutine behavior for auto-labeling
-        this.profiler = {
-            enabled: false,
-            maxFrames: 200,
-            framesRemaining: 0,
-            startFrame: 0,
-            subroutines: new Map(),   // autoMapKey → SubroutineStats
-            onComplete: null,         // callback(results)
-            im2: null,               // { handlerAddr, vectorTableAddr, iReg } — detected IM 2 info
-            tStatesPerPC: new Map()   // autoMapKey → total T-states spent (hotspot detection)
-        };
-
-        // POKE write trace (blacklist collection for POKE search)
-        this.pokeWriteTraceEnabled = false;
-        this.pokeWriteTraceAddrs = null;  // Set<number> when active
 
         // RZX playback state
         this.rzxPlayer = null;      // RZXLoader instance
@@ -258,8 +224,6 @@ export class Spectrum {
         this.kempstonMouseWheel = 0; // Wheel position 0-15
         this.kempstonMouseEnabled = false;
         this.kempstonMouseWheelEnabled = false;
-        this.kempstonMouseSwapButtons = false; // Swap left/right buttons (bit0↔bit1)
-        this.kempstonMouseSwapWheel = false; // Invert wheel direction
 
         // Extended Kempston Joystick (bits 5-7: C, A, Start buttons)
         this.kempstonExtendedEnabled = false;
@@ -280,18 +244,6 @@ export class Spectrum {
                 const key = this.getAutoMapKey(addr);
                 this.autoMap.read.set(key, (this.autoMap.read.get(key) || 0) + 1);
             }
-            // Profiler: track screen reads
-            if (this.profiler.enabled && (addr >= 0x4000 && addr <= 0x5AFF)) {
-                const sub = this._profilerCurrentSub();
-                if (sub) {
-                    const skey = this.getAutoMapKey(sub.addr);
-                    const stats = this.profiler.subroutines.get(skey);
-                    if (stats) {
-                        if (addr < 0x5800) stats.readsScreenBitmap = true;
-                        else stats.readsScreenAttr = true;
-                    }
-                }
-            }
             if (this.triggers.length > 0) this.checkReadWatchpoint(addr, val);
         };
         this._memoryWriteCallback = (addr, val) => {
@@ -300,26 +252,10 @@ export class Spectrum {
                 const key = this.getAutoMapKey(addr);
                 this.autoMap.written.set(key, (this.autoMap.written.get(key) || 0) + 1);
             }
-            // Profiler: track screen writes
-            if (this.profiler.enabled && (addr >= 0x4000 && addr <= 0x5AFF)) {
-                const sub = this._profilerCurrentSub();
-                if (sub) {
-                    const skey = this.getAutoMapKey(sub.addr);
-                    const stats = this.profiler.subroutines.get(skey);
-                    if (stats) {
-                        if (addr < 0x5800) stats.writesScreenBitmap = true;
-                        else stats.writesScreenAttr = true;
-                    }
-                }
-            }
             // Trace: track memory writes (only during runtime tracing, not step tracing)
             if (this.runtimeTraceEnabled &&
                 this.traceMemOps.length < this.traceMemOpsLimit) {
                 this.traceMemOps.push({ addr, val });
-            }
-            // POKE write trace: collect written addresses for blacklist
-            if (this.pokeWriteTraceEnabled) {
-                this.pokeWriteTraceAddrs.add(addr);
             }
             // Multicolor: disabled (known limitation - see README)
             if (this.triggers.length > 0) this.checkWriteWatchpoint(addr, val);
@@ -472,13 +408,7 @@ export class Spectrum {
                 mcycleOffset += cycles;
             };
 
-            // Reset contention tracking at instruction boundaries
-            // Exposed as resetContend() for HALT NOP contention in main loop
-            this.cpu.resetContend = () => {
-                mcycleOffset = 0;
-                isFirstAccess = true;
-            };
-
+            // Reset at instruction boundaries
             const originalExecute = this.cpu.execute.bind(this.cpu);
             this.cpu.execute = () => {
                 mcycleOffset = 0;
@@ -622,11 +552,6 @@ export class Spectrum {
                 mcycleOffset += cycles;
             };
 
-            this.cpu.resetContend = () => {
-                mcycleOffset = 0;
-                isFirstAccess = true;
-            };
-
             const originalExecute = this.cpu.execute.bind(this.cpu);
             this.cpu.execute = () => {
                 mcycleOffset = 0;
@@ -721,11 +646,6 @@ export class Spectrum {
 
             this.cpu.internalCycles = (cycles) => {
                 mcycleOffset += cycles;
-            };
-
-            this.cpu.resetContend = () => {
-                mcycleOffset = 0;
-                isFirstAccess = true;
             };
 
             const originalExecute = this.cpu.execute.bind(this.cpu);
@@ -1013,7 +933,6 @@ export class Spectrum {
     setOverlayMode(mode) {
         // mode: 'normal', 'grid', 'box', 'screen', 'reveal', 'beam', 'beamscreen', 'noattr', 'nobitmap'
         this.overlayMode = mode;
-        this.ula.borderOnly = (mode === 'screen' || mode === 'reveal' || mode === 'beamscreen');
     }
 
     setZoom(zoom) {
@@ -1050,9 +969,6 @@ export class Spectrum {
         this.autoMap.read.clear();
         this.autoMap.written.clear();
         this.autoMap.currentFetchAddrs.clear();
-
-        // Clear runtime call stack
-        this._debugCallStack = [];
     }
 
     // ========== Port I/O ==========
@@ -1252,21 +1168,10 @@ export class Spectrum {
                 port: port,
                 value: result,
                 pc: this.cpu.pc,
-                src: this.getPortSource(),
                 frame: this.totalFrames,
                 rzxFrame: this.rzxPlaying ? this.rzxFrame : -1,
                 t: this.cpu.tStates
             });
-        }
-
-        // Profiler: track port reads per subroutine
-        if (this.profiler.enabled) {
-            const sub = this._profilerCurrentSub();
-            if (sub) {
-                const key = this.getAutoMapKey(sub.addr);
-                const stats = this.profiler.subroutines.get(key);
-                if (stats) stats.portsIn.add(port);
-            }
         }
 
         // RZX recording - record all port read results
@@ -1290,24 +1195,10 @@ export class Spectrum {
                 port: port,
                 value: val,
                 pc: this.cpu.pc,
-                src: this.getPortSource(),
                 frame: this.totalFrames,
                 rzxFrame: this.rzxPlaying ? this.rzxFrame : -1,
                 t: this.cpu.tStates
             });
-        }
-
-        // Profiler: track port writes per subroutine
-        if (this.profiler.enabled) {
-            const sub = this._profilerCurrentSub();
-            if (sub) {
-                const key = this.getAutoMapKey(sub.addr);
-                const stats = this.profiler.subroutines.get(key);
-                if (stats) {
-                    stats.portsOut.add(port);
-                    if ((port & 0x01) === 0) stats.beeperOuts++;
-                }
-            }
         }
 
         // Check port breakpoint using unified trigger system
@@ -1498,7 +1389,6 @@ export class Spectrum {
         // Preserve T-state overshoot from previous frame (Swan-style)
         // If instruction ended past frame boundary, carry over the excess
         if (this.cpu.tStates >= tstatesPerFrame) {
-            this.breakpointTStates += tstatesPerFrame;
             this.cpu.tStates -= tstatesPerFrame;
             // Also adjust tape timing tracker to stay in sync
             if (this._lastTapeUpdate >= tstatesPerFrame) {
@@ -1548,31 +1438,39 @@ export class Spectrum {
         const intPulseDuration = this.profile.intPulseDuration;
         let intFired = false;
 
-        // INT pulse window: [intStart, intEnd)
-        // Early 48K: [0, 32), Late 48K: [1, 33), 128K/Pentagon: [0, 36)
-        const intOffset = (this.profile.earlyIntTiming && this.lateTimings) ? 1 : 0;
-        const intStart = intOffset;
-        const intEnd = intOffset + intPulseDuration;
+        // Early/Late INT timing (Swan-style):
+        // 48K only: Early at T-4, Late at frame boundary
+        // 128K/Pentagon: always at frame boundary
+        const earlyIntPoint = (this.profile.earlyIntTiming && !this.lateTimings) ?
+                               (tstatesPerFrame - 4) : tstatesPerFrame;
 
         // RZX recording: track instruction count before first interrupt
         let rzxRecInstrBeforeInt = this.rzxRecording ? this.cpu.instructionCount : 0;
 
         // Fire interrupt if within INT pulse window from previous frame overshoot
+        // INT pulse started at earlyIntPoint and lasts intPulseDuration T-states
         // During RZX playback: fire early interrupt unconditionally if CPU is halted
         // (HALT can only exit via interrupt, and T-states may not be in sync during RZX)
         const rzxHaltedNeedsInt = this.rzxPlaying && this.cpu.halted && this.cpu.iff1 && !this.cpu.eiPending;
         const normalIntWindow = !this.rzxPlaying &&
-            this.cpu.tStates >= intStart && this.cpu.tStates < intEnd &&
+            this.cpu.tStates >= 0 && this.cpu.tStates < intPulseDuration &&
             this.cpu.iff1 && !this.cpu.eiPending;
         if (rzxHaltedNeedsInt || normalIntWindow) {
             // RZX recording: capture instruction count BEFORE interrupt
             if (this.rzxRecording && !intFired) {
                 rzxRecInstrBeforeInt = this.cpu.instructionCount;
             }
-            const _intOldPC = this.cpu.pc, _intOldSP = this.cpu.sp;
+            // If CPU is halted, count the final HALT NOP M1 before interrupt fires
+            if (this.cpu.halted) {
+                this.cpu.incR();
+                this.cpu.instructionCount++;  // HALT NOP M1 cycle
+                // Update capture after HALT NOP
+                if (this.rzxRecording && !intFired) {
+                    rzxRecInstrBeforeInt = this.cpu.instructionCount;
+                }
+            }
             const intTstates = this.cpu.interrupt();
             this.cpu.tStates += intTstates;
-            this._trackInterruptCall(_intOldPC, _intOldSP);
             intFired = true;
 
             // RZX recording: start recording RIGHT AFTER interrupt fires
@@ -1630,7 +1528,6 @@ export class Spectrum {
                 this.breakpointHit = true;
                 this.triggerHit = true;
                 this.lastTrigger = { trigger: execTrigger, addr: this.cpu.pc, type: 'exec' };
-                this.breakpointTStates += this.cpu.tStates;
                 this.stop();
                 // Complete rendering of remaining lines
                 while (nextLineToRender < totalLines) {
@@ -1643,7 +1540,6 @@ export class Spectrum {
                 this.drawOverlay();
                 if (this.onBreakpoint) this.onBreakpoint(this.cpu.pc);
                 if (this.onTrigger) this.onTrigger(this.lastTrigger);
-                this._bpTStatesResetPending = true;
                 return;
             }
             if (tapeTrapsEnabled && this.tapeTrap.checkTrap()) continue;
@@ -1676,39 +1572,36 @@ export class Spectrum {
                     this.cpu.iff1 = this.cpu.iff2 = true;
                 }
 
-                // Normal HALT NOP — M1 fetch from (PC+1), subject to contention
-                if (contentionEnabled && this.cpu.contend) {
-                    this.cpu.resetContend();
-                    this.cpu.contend((this.cpu.pc + 1) & 0xffff);
-                }
-                const _haltTsBefore = this.cpu.tStates;
-                this.cpu.tStates += 4;
-                this.cpu.incR();
-                this.cpu.instructionCount++;  // HALT NOP is an M1 cycle for RZX
-                if (this.profiler.enabled) {
-                    const _pcKey = this.getAutoMapKey(this.cpu.pc);
-                    const _haltTsCost = this.cpu.tStates - _haltTsBefore;
-                    this.profiler.tStatesPerPC.set(_pcKey, (this.profiler.tStatesPerPC.get(_pcKey) || 0) + _haltTsCost);
-                }
-
-                // Check if INT should fire after this HALT NOP
-                if (!this.rzxPlaying && !intFired &&
-                    this.cpu.tStates >= intStart && this.cpu.tStates < intEnd &&
+                // Check if INT will fire during this HALT NOP cycle
+                // Skip during RZX playback - frame end controlled by instruction count (FUSE-style)
+                const nextT = this.cpu.tStates + 4;
+                const is48kEarly = this.profile.earlyIntTiming && !this.lateTimings;
+                if (!this.rzxPlaying && !intFired && is48kEarly &&
+                    this.cpu.tStates < earlyIntPoint && nextT >= earlyIntPoint &&
                     this.cpu.iff1 && !this.cpu.eiPending) {
+                    // Complete HALT NOP cycle + 4T alignment to match Swan timing
+                    this.cpu.tStates = nextT + 4;
+                    this.cpu.incR();
+                    this.cpu.instructionCount++;  // HALT NOP is an M1 cycle
+                    // RZX recording: capture instruction count BEFORE interrupt
                     if (this.rzxRecording) {
                         rzxRecInstrBeforeInt = this.cpu.instructionCount;
                     }
-                    const _hintOldPC = this.cpu.pc, _hintOldSP = this.cpu.sp;
                     const intTstates = this.cpu.interrupt();
                     this.cpu.tStates += intTstates;
-                    this._trackInterruptCall(_hintOldPC, _hintOldSP);
                     intFired = true;
+                    // RZX recording: start recording RIGHT AFTER interrupt fires
                     if (this.rzxRecordPending) {
                         this.rzxStartRecordingNow();
                     }
                     this.autoMap.inExecution = false;
                     continue;
                 }
+
+                // Normal HALT NOP - no INT during this cycle
+                this.cpu.tStates += 4;
+                this.cpu.incR();
+                this.cpu.instructionCount++;  // HALT NOP is an M1 cycle for RZX
 
                 // Record trace for first HALT only (avoids flooding trace with repeated HALTs)
                 if (tracing && !this.haltTraced) {
@@ -1751,17 +1644,7 @@ export class Spectrum {
                         this.memory.read((instrPC + 3) & 0xffff)
                     ];
                 }
-                const _csOldPC = this.cpu.pc, _csOldSP = this.cpu.sp;
-                const _tsBefore = this.cpu.tStates;
                 this.cpu.execute();
-                this._trackCallStack(_csOldPC, _csOldSP);
-                // Profiler: track CALL/RST entries and per-PC T-states
-                if (this.profiler.enabled) {
-                    this._profilerTrackCallRet(_csOldPC, _csOldSP);
-                    const _tsCost = this.cpu.tStates - _tsBefore;
-                    const _pcKey = this.getAutoMapKey(_csOldPC);
-                    this.profiler.tStatesPerPC.set(_pcKey, (this.profiler.tStatesPerPC.get(_pcKey) || 0) + _tsCost);
-                }
                 // If HALT instruction was just executed, mark as traced to avoid duplicate
                 if (this.cpu.halted) {
                     this.haltTraced = true;
@@ -1789,23 +1672,6 @@ export class Spectrum {
                         break;
                     }
                 }
-
-                // Check if INT should fire after this instruction
-                if (!this.rzxPlaying && !intFired &&
-                    this.cpu.tStates >= intStart && this.cpu.tStates < intEnd &&
-                    this.cpu.iff1 && !this.cpu.eiPending) {
-                    if (this.rzxRecording) {
-                        rzxRecInstrBeforeInt = this.cpu.instructionCount;
-                    }
-                    const _mintOldPC = this.cpu.pc, _mintOldSP = this.cpu.sp;
-                    const intTstates = this.cpu.interrupt();
-                    this.cpu.tStates += intTstates;
-                    this._trackInterruptCall(_mintOldPC, _mintOldSP);
-                    intFired = true;
-                    if (this.rzxRecordPending) {
-                        this.rzxStartRecordingNow();
-                    }
-                }
             }
 
             this.autoMap.inExecution = false;
@@ -1831,7 +1697,6 @@ export class Spectrum {
             if (this.watchpointHit) {
                 this.watchpointHit = false;
                 this.triggerHit = false;
-                this.breakpointTStates += this.cpu.tStates;
                 this.stop();
                 // Complete rendering of remaining lines
                 while (nextLineToRender < totalLines) {
@@ -1844,7 +1709,6 @@ export class Spectrum {
                 this.drawOverlay();
                 if (this.onWatchpoint) this.onWatchpoint(this.lastWatchpoint);
                 if (this.onTrigger) this.onTrigger(this.lastTrigger);
-                this._bpTStatesResetPending = true;
                 return;
             }
 
@@ -1852,7 +1716,6 @@ export class Spectrum {
             if (this.portBreakpointHit) {
                 this.portBreakpointHit = false;
                 this.triggerHit = false;
-                this.breakpointTStates += this.cpu.tStates;
                 this.stop();
                 // Complete rendering of remaining lines
                 while (nextLineToRender < totalLines) {
@@ -1865,43 +1728,6 @@ export class Spectrum {
                 this.drawOverlay();
                 if (this.onPortBreakpoint) this.onPortBreakpoint(this.lastPortBreakpoint);
                 if (this.onTrigger) this.onTrigger(this.lastTrigger);
-                this._bpTStatesResetPending = true;
-                return;
-            }
-
-            // Check tape block trigger hit
-            if (this.tapeBlockHit) {
-                this.tapeBlockHit = false;
-                this.triggerHit = false;
-                this.breakpointTStates += this.cpu.tStates;
-                this.stop();
-                while (nextLineToRender < totalLines) {
-                    this.ula.renderScanline(nextLineToRender++);
-                }
-                const frameBuffer = this.ula.endFrame();
-                this.imageData.data.set(frameBuffer);
-                this.ctx.putImageData(this.imageData, 0, 0);
-                this.drawOverlay();
-                if (this.onTrigger) this.onTrigger(this.lastTrigger);
-                this._bpTStatesResetPending = true;
-                return;
-            }
-
-            // Check disk trigger hit
-            if (this.diskTriggerHit) {
-                this.diskTriggerHit = false;
-                this.triggerHit = false;
-                this.breakpointTStates += this.cpu.tStates;
-                this.stop();
-                while (nextLineToRender < totalLines) {
-                    this.ula.renderScanline(nextLineToRender++);
-                }
-                const frameBuffer = this.ula.endFrame();
-                this.imageData.data.set(frameBuffer);
-                this.ctx.putImageData(this.imageData, 0, 0);
-                this.drawOverlay();
-                if (this.onTrigger) this.onTrigger(this.lastTrigger);
-                this._bpTStatesResetPending = true;
                 return;
             }
         }
@@ -1918,10 +1744,8 @@ export class Spectrum {
         // During RZX playback, the frame ended when instruction count was reached
         // Now fire the interrupt to start the next frame's execution
         if (this.rzxPlaying && this.cpu.iff1 && !this.cpu.eiPending) {
-            const _rzxIntOldPC = this.cpu.pc, _rzxIntOldSP = this.cpu.sp;
             const intTstates = this.cpu.interrupt();
             this.cpu.tStates += intTstates;
-            this._trackInterruptCall(_rzxIntOldPC, _rzxIntOldSP);
         }
 
         // Render remaining lines
@@ -1933,7 +1757,7 @@ export class Spectrum {
 
         // Handle border-only modes: replace paper area with border color
         // Use proper T-state calculation to extend border into paper area
-        const borderOnlyMode = this.overlayMode === 'screen' || this.overlayMode === 'reveal' || this.overlayMode === 'beamscreen';
+        const borderOnlyMode = this.overlayMode === 'screen' || this.overlayMode === 'beamscreen';
         if (borderOnlyMode) {
             const dims = this.ula.getDimensions();
             const changes = this.ula.borderChanges;
@@ -1998,23 +1822,12 @@ export class Spectrum {
         this.totalFrames++;
         if (this.onFrame) this.onFrame(this.frameCount);
 
-        // Profiler: countdown and stop when done
-        if (this.profiler.enabled) {
-            this.profiler.framesRemaining--;
-            if (this.profiler.framesRemaining <= 0) {
-                this.stopProfiling();
-            }
-        }
-
         // Process AY + beeper + tape audio for this frame (skip at high speeds - audio would be meaningless)
         if (this.audio && this.audio.enabled && this.speed > 0 && this.speed <= 200) {
             // Get tape audio from tape player (if playing and enabled)
             // Also suppress tape audio briefly after returning from high speed
             const tapeAudioSuppressed = this._suppressTapeAudioUntil && Date.now() < this._suppressTapeAudioUntil;
-            // Suppress tape audio in flash load mode — tape player may still run
-            // for turbo block EAR bit generation, but audio output is muted
-            const tapeAudioChanges = (this.tapeAudioEnabled && !this.tapeFlashLoad &&
-                this.tapePlayer.isPlaying() && !tapeAudioSuppressed)
+            const tapeAudioChanges = (this.tapeAudioEnabled && this.tapePlayer.isPlaying() && !tapeAudioSuppressed)
                 ? this.tapePlayer.getEdgeTransitions() : [];
 
             // Pass tape audio changes (ROM doesn't echo tape signal to speaker)
@@ -2156,21 +1969,24 @@ export class Spectrum {
         const intPulseDuration = this.profile.intPulseDuration;
         let intFired = false;
 
-        // INT pulse window: [intStart, intEnd)
-        // Early 48K: [0, 32), Late 48K: [1, 33), 128K/Pentagon: [0, 36)
-        const intOffset = (this.profile.earlyIntTiming && this.lateTimings) ? 1 : 0;
-        const intStart = intOffset;
-        const intEnd = intOffset + intPulseDuration;
+        // Early/Late INT timing (Swan-style):
+        // 48K only: Early at T-4, Late at frame boundary
+        // 128K/Pentagon: always at frame boundary
+        const earlyIntPoint = (this.profile.earlyIntTiming && !this.lateTimings) ?
+                               (tstatesPerFrame - 4) : tstatesPerFrame;
 
         // Fire interrupt if within INT pulse window from previous frame overshoot
         // Skip during RZX playback - frame boundaries controlled by instruction count (FUSE-style)
         if (!this.rzxPlaying &&
-            this.cpu.tStates >= intStart && this.cpu.tStates < intEnd &&
+            this.cpu.tStates >= 0 && this.cpu.tStates < intPulseDuration &&
             this.cpu.iff1 && !this.cpu.eiPending) {
-            const _hlIntOldPC = this.cpu.pc, _hlIntOldSP = this.cpu.sp;
+            // If CPU is halted, count the final HALT NOP M1 before interrupt fires
+            if (this.cpu.halted) {
+                this.cpu.incR();
+                this.cpu.instructionCount++;  // HALT NOP M1 cycle
+            }
             const intTstates = this.cpu.interrupt();
             this.cpu.tStates += intTstates;
-            this._trackInterruptCall(_hlIntOldPC, _hlIntOldSP);
             intFired = true;
         }
 
@@ -2237,32 +2053,30 @@ export class Spectrum {
                     this.cpu.iff1 = this.cpu.iff2 = true;
                 }
 
-                // Normal HALT NOP — M1 fetch from (PC+1), subject to contention
-                if (this.profile.hasContention && this.contentionEnabled && this.cpu.contend) {
-                    this.cpu.resetContend();
-                    this.cpu.contend((this.cpu.pc + 1) & 0xffff);
-                }
-                const _hlHaltTsBefore = this.cpu.tStates;
-                this.cpu.tStates += 4;
-                this.cpu.incR();
-                this.cpu.instructionCount++;  // HALT NOP counts as M1 cycle
-                if (this.profiler.enabled) {
-                    const _pcKey = this.getAutoMapKey(this.cpu.pc);
-                    const _hlHaltTsCost = this.cpu.tStates - _hlHaltTsBefore;
-                    this.profiler.tStatesPerPC.set(_pcKey, (this.profiler.tStatesPerPC.get(_pcKey) || 0) + _hlHaltTsCost);
-                }
-
-                // Check if INT should fire after this HALT NOP
-                if (!this.rzxPlaying && !intFired &&
-                    this.cpu.tStates >= intStart && this.cpu.tStates < intEnd &&
+                // Check if INT will fire during this HALT NOP cycle
+                // INT acknowledged at end of HALT NOP cycle (instruction boundary)
+                // Only for 48K early timing: INT at T=69884
+                // 48K late and 128K/Pentagon use frame-start INT timing
+                // Skip during RZX playback - frame end controlled by instruction count (FUSE-style)
+                const nextT = this.cpu.tStates + 4;
+                const is48kEarly = this.profile.earlyIntTiming && !this.lateTimings;  // Cached in runFrame, needed here for runFrameHeadless
+                if (!this.rzxPlaying && !intFired && is48kEarly &&
+                    this.cpu.tStates < earlyIntPoint && nextT >= earlyIntPoint &&
                     this.cpu.iff1 && !this.cpu.eiPending) {
-                    const _hlHintOldPC = this.cpu.pc, _hlHintOldSP = this.cpu.sp;
+                    // Complete HALT NOP cycle + 4T alignment to match Swan timing
+                    // Swan shows T=60 at $805B, we had T=41, need +19T but only 4T affects quantized border
+                    this.cpu.tStates = nextT + 4;
+                    this.cpu.incR();
                     const intTstates = this.cpu.interrupt();
                     this.cpu.tStates += intTstates;
-                    this._trackInterruptCall(_hlHintOldPC, _hlHintOldSP);
                     intFired = true;
                     continue;
                 }
+
+                // Normal HALT NOP - no INT during this cycle
+                this.cpu.tStates += 4;
+                this.cpu.incR();
+                this.cpu.instructionCount++;  // HALT NOP counts as M1 cycle
 
                 // RZX playback: check if instruction count reached (FUSE-style frame end)
                 if (this.rzxPlaying && rzxExpectedFetchCount > 0) {
@@ -2277,17 +2091,7 @@ export class Spectrum {
                     }
                 }
             } else {
-                const _hlCsOldPC = this.cpu.pc, _hlCsOldSP = this.cpu.sp;
-                const _hlTsBefore = this.cpu.tStates;
                 this.cpu.execute();
-                this._trackCallStack(_hlCsOldPC, _hlCsOldSP);
-                // Profiler: track CALL/RST entries and per-PC T-states
-                if (this.profiler.enabled) {
-                    this._profilerTrackCallRet(_hlCsOldPC, _hlCsOldSP);
-                    const _hlTsCost = this.cpu.tStates - _hlTsBefore;
-                    const _hlPcKey = this.getAutoMapKey(_hlCsOldPC);
-                    this.profiler.tStatesPerPC.set(_hlPcKey, (this.profiler.tStatesPerPC.get(_hlPcKey) || 0) + _hlTsCost);
-                }
 
                 // RZX playback: check if instruction count reached (FUSE-style frame end)
                 if (this.rzxPlaying && rzxExpectedFetchCount > 0) {
@@ -2300,17 +2104,6 @@ export class Spectrum {
                         console.error(`RZX F${this.rzxFrame}: safety limit exceeded! M1=${m1Count} expected=${rzxExpectedFetchCount}`);
                         break;
                     }
-                }
-
-                // Check if INT should fire after this instruction
-                if (!this.rzxPlaying && !intFired &&
-                    this.cpu.tStates >= intStart && this.cpu.tStates < intEnd &&
-                    this.cpu.iff1 && !this.cpu.eiPending) {
-                    const _hlMintOldPC = this.cpu.pc, _hlMintOldSP = this.cpu.sp;
-                    const intTstates = this.cpu.interrupt();
-                    this.cpu.tStates += intTstates;
-                    this._trackInterruptCall(_hlMintOldPC, _hlMintOldSP);
-                    intFired = true;
                 }
             }
 
@@ -2333,10 +2126,8 @@ export class Spectrum {
 
         // RZX playback: fire interrupt at frame end (FUSE-style)
         if (this.rzxPlaying && this.cpu.iff1 && !this.cpu.eiPending) {
-            const _hlRzxIntOldPC = this.cpu.pc, _hlRzxIntOldSP = this.cpu.sp;
             const intTstates = this.cpu.interrupt();
             this.cpu.tStates += intTstates;
-            this._trackInterruptCall(_hlRzxIntOldPC, _hlRzxIntOldSP);
         }
 
         // Render any remaining scanlines (same as runFrame)
@@ -2350,23 +2141,12 @@ export class Spectrum {
         this.frameCount++;
         this.totalFrames++;
 
-        // Profiler: countdown and stop when done
-        if (this.profiler.enabled) {
-            this.profiler.framesRemaining--;
-            if (this.profiler.framesRemaining <= 0) {
-                this.stopProfiling();
-            }
-        }
-
         // Process AY + beeper + tape audio for this frame (skip at high speeds - audio would be meaningless)
         if (this.audio && this.audio.enabled && this.speed > 0 && this.speed <= 200) {
             // Get tape audio from tape player (if playing and enabled)
             // Also suppress tape audio briefly after returning from high speed
             const tapeAudioSuppressed = this._suppressTapeAudioUntil && Date.now() < this._suppressTapeAudioUntil;
-            // Suppress tape audio in flash load mode — tape player may still run
-            // for turbo block EAR bit generation, but audio output is muted
-            const tapeAudioChanges = (this.tapeAudioEnabled && !this.tapeFlashLoad &&
-                this.tapePlayer.isPlaying() && !tapeAudioSuppressed)
+            const tapeAudioChanges = (this.tapeAudioEnabled && this.tapePlayer.isPlaying() && !tapeAudioSuppressed)
                 ? this.tapePlayer.getEdgeTransitions() : [];
 
             // Pass tape audio changes (ROM doesn't echo tape signal to speaker)
@@ -2556,9 +2336,6 @@ export class Spectrum {
     }
 
     drawRevealOverlay() {
-        // Reveal mode: main canvas shows border-only (borderOnly=true), overlay draws
-        // the normal screen picture (paper area) semi-transparently on top so you can
-        // see border effects underneath the screen content.
         if (!this.overlayCtx) return;
         const ctx = this.overlayCtx;
         const dims = this.ula.getDimensions();
@@ -2567,86 +2344,72 @@ export class Spectrum {
         // Clear overlay canvas
         ctx.clearRect(0, 0, this.overlayCanvas.width, this.overlayCanvas.height);
 
+        // Scale coordinates by zoom
         const borderTop = dims.borderTop * zoom;
         const borderLeft = dims.borderLeft * zoom;
         const screenWidth = dims.screenWidth * zoom;
         const screenHeight = dims.screenHeight * zoom;
 
-        // Render the normal screen content (bitmaps + attributes) into a temp canvas
-        const screen = this.ula.memory.getScreenBase();
-        const screenRam = screen.ram;
-        const pal = this.ula.palette;
-        const ulaplus = this.ula.ulaplus;
-        const ulaPlusActive = ulaplus && ulaplus.enabled && ulaplus.paletteEnabled;
-        const flashActive = this.ula.flashState;
+        // Reveal mode: show border extended OVER the paper (semi-transparent)
+        // Use proper T-state calculation to extend border into paper area
+        const changes = this.ula.borderChanges;
+        const palette = this.ula.palette;
 
         const tempCanvas = document.createElement('canvas');
         tempCanvas.width = dims.width;
         tempCanvas.height = dims.height;
         const tempCtx = tempCanvas.getContext('2d');
         const tempImageData = tempCtx.createImageData(dims.width, dims.height);
-        const data = tempImageData.data;
 
-        for (let y = 0; y < 192; y++) {
-            const third = Math.floor(y / 64);
-            const lineInThird = y & 0x07;
-            const charRow = Math.floor((y & 0x38) / 8);
-            const pixelAddr = (third << 11) | (lineInThird << 8) | (charRow << 5);
-            const attrAddr = 0x1800 + Math.floor(y / 8) * 32;
-            const screenY = y + dims.borderTop;
+        // For each line in paper area, extend border using proper T-state calculation
+        for (let y = dims.borderTop; y < dims.borderTop + dims.screenHeight; y++) {
+            // Calculate T-state range for this line
+            const lineStartTstate = this.ula.calculateLineStartTstate(y);
 
-            for (let col = 0; col < 32; col++) {
-                const pixelByte = screenRam[pixelAddr + col];
-                const attr = screenRam[attrAddr + col];
+            // Find starting color for this line
+            let currentColor = (changes && changes.length > 0) ? changes[0].color : this.ula.borderColor;
+            let changeIdx = 0;
 
-                let inkR, inkG, inkB, paperR, paperG, paperB;
-                if (ulaPlusActive) {
-                    const clut = ((attr >> 6) & 0x03) << 4;
-                    const inkIdx = clut + (attr & 0x07);
-                    const paperIdx = clut + 8 + ((attr >> 3) & 0x07);
-                    // Decode GRB 332 palette entries to RGB
-                    const inkGrb = ulaplus.palette[inkIdx];
-                    const paperGrb = ulaplus.palette[paperIdx];
-                    const ig3 = (inkGrb >> 5) & 7, ir3 = (inkGrb >> 2) & 7, ib2 = inkGrb & 3;
-                    inkR = (ir3 << 5) | (ir3 << 2) | (ir3 >> 1);
-                    inkG = (ig3 << 5) | (ig3 << 2) | (ig3 >> 1);
-                    inkB = (ib2 << 6) | (ib2 << 4) | (ib2 << 2) | ib2;
-                    const pg3 = (paperGrb >> 5) & 7, pr3 = (paperGrb >> 2) & 7, pb2 = paperGrb & 3;
-                    paperR = (pr3 << 5) | (pr3 << 2) | (pr3 >> 1);
-                    paperG = (pg3 << 5) | (pg3 << 2) | (pg3 >> 1);
-                    paperB = (pb2 << 6) | (pb2 << 4) | (pb2 << 2) | pb2;
-                } else {
-                    let ink = attr & 0x07;
-                    let paper = (attr >> 3) & 0x07;
-                    const bright = (attr & 0x40) ? 8 : 0;
-                    if ((attr & 0x80) && flashActive) {
-                        const tmp = ink; ink = paper; paper = tmp;
-                    }
-                    const inkRgb = pal[ink + bright];
-                    const paperRgb = pal[paper + bright];
-                    inkR = inkRgb[0]; inkG = inkRgb[1]; inkB = inkRgb[2];
-                    paperR = paperRgb[0]; paperG = paperRgb[1]; paperB = paperRgb[2];
-                }
-
-                for (let bit = 7; bit >= 0; bit--) {
-                    const px = dims.borderLeft + col * 8 + (7 - bit);
-                    const idx = (screenY * dims.width + px) * 4;
-                    if (pixelByte & (1 << bit)) {
-                        data[idx] = inkR; data[idx + 1] = inkG; data[idx + 2] = inkB;
+            if (changes && changes.length > 0) {
+                for (let i = 0; i < changes.length; i++) {
+                    if (changes[i].tState <= lineStartTstate) {
+                        currentColor = changes[i].color;
+                        changeIdx = i + 1;
                     } else {
-                        data[idx] = paperR; data[idx + 1] = paperG; data[idx + 2] = paperB;
+                        break;
                     }
-                    data[idx + 3] = 128;  // 50% transparent — border shows through
                 }
             }
-        }
 
+            // Fill paper area with proper border colors based on T-state
+            for (let x = dims.borderLeft; x < dims.borderLeft + dims.screenWidth; x++) {
+                // T-state for this pixel position
+                const pixelTstate = lineStartTstate + Math.floor(x / 2);
+
+                // Update color if there are changes before this T-state
+                if (changes) {
+                    while (changeIdx < changes.length && changes[changeIdx].tState <= pixelTstate) {
+                        currentColor = changes[changeIdx].color;
+                        changeIdx++;
+                    }
+                }
+
+                // Ensure color index is valid and get RGB from palette
+                const colorIdx = currentColor & 7;
+                const rgb = palette ? palette[colorIdx] : [0, 0, 0, 255];
+                const idx = (y * dims.width + x) * 4;
+                tempImageData.data[idx] = rgb[0];
+                tempImageData.data[idx + 1] = rgb[1];
+                tempImageData.data[idx + 2] = rgb[2];
+                tempImageData.data[idx + 3] = 180;  // Semi-transparent overlay
+            }
+        }
         tempCtx.putImageData(tempImageData, 0, 0);
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(tempCanvas, 0, 0, dims.width, dims.height,
                       0, 0, dims.width * zoom, dims.height * zoom);
 
-        // Draw border around screen area for clarity
+        // Draw border around screen area for clarity (1px line)
         ctx.strokeStyle = 'rgba(255, 255, 0, 0.8)';
         ctx.lineWidth = 1;
         ctx.strokeRect(borderLeft + 0.5, borderTop + 0.5, screenWidth - 1, screenHeight - 1);
@@ -3117,15 +2880,14 @@ export class Spectrum {
     }
 
     drawNoBitmapOverlay() {
-        // No Bitmap mode: each 8x8 cell shows paper color with a diagonal
-        // ink-colored X cross so you can see where ink differs from paper.
-        // Per-cell color sampling for multicolor support.
+        // No Bitmap mode: Show cells with diagonal crosses using ink/paper colors
+        // For multicolor support: extract ink/paper colors from the already-rendered frame buffer
+        // (attribute memory has final values, but frame buffer has correct per-scanline colors)
         if (!this.overlayCtx) return;
         const ctx = this.overlayCtx;
         const dims = this.ula.getDimensions();
         const zoom = this.zoom;
         const frameBuffer = this.ula.frameBuffer;
-        if (!frameBuffer) return;
 
         // Clear overlay canvas
         ctx.clearRect(0, 0, this.overlayCanvas.width, this.overlayCanvas.height);
@@ -3136,7 +2898,6 @@ export class Spectrum {
         tempCanvas.height = dims.height;
         const tempCtx = tempCanvas.getContext('2d');
         const tempImageData = tempCtx.createImageData(dims.width, dims.height);
-        const data = tempImageData.data;
 
         // Copy border from frame buffer
         for (let y = 0; y < dims.height; y++) {
@@ -3145,59 +2906,55 @@ export class Spectrum {
                                  y >= dims.borderTop && y < dims.borderTop + dims.screenHeight;
                 if (!isScreen) {
                     const idx = (y * dims.width + x) * 4;
-                    data[idx] = frameBuffer[idx];
-                    data[idx + 1] = frameBuffer[idx + 1];
-                    data[idx + 2] = frameBuffer[idx + 2];
-                    data[idx + 3] = 255;
+                    tempImageData.data[idx] = frameBuffer[idx];
+                    tempImageData.data[idx + 1] = frameBuffer[idx + 1];
+                    tempImageData.data[idx + 2] = frameBuffer[idx + 2];
+                    tempImageData.data[idx + 3] = 255;
                 }
             }
         }
 
-        // For each 8x8 cell, detect ink/paper from the top scanline of the cell,
-        // then fill the entire cell with paper + centered cross in ink.
-        for (let charRow = 0; charRow < 24; charRow++) {
+        // Process each scanline for multicolor support
+        for (let y = 0; y < 192; y++) {
+            const visY = dims.borderTop + y;
+            const lineInCell = y % 8;
+
             for (let charCol = 0; charCol < 32; charCol++) {
                 const cellX = dims.borderLeft + charCol * 8;
-                const cellY = dims.borderTop + charRow * 8;
 
-                // Sample all 64 pixels to find paper and ink colors
+                // Extract ink and paper colors from frame buffer for this 8-pixel span
+                // Sample all 8 pixels and find the two unique colors
                 const colors = new Map();
-                for (let ly = 0; ly < 8; ly++) {
-                    for (let px = 0; px < 8; px++) {
-                        const idx = ((cellY + ly) * dims.width + cellX + px) * 4;
-                        const key = (frameBuffer[idx] << 16) | (frameBuffer[idx + 1] << 8) | frameBuffer[idx + 2];
-                        colors.set(key, (colors.get(key) || 0) + 1);
-                    }
+                for (let px = 0; px < 8; px++) {
+                    const idx = (visY * dims.width + cellX + px) * 4;
+                    const r = frameBuffer[idx];
+                    const g = frameBuffer[idx + 1];
+                    const b = frameBuffer[idx + 2];
+                    const key = (r << 16) | (g << 8) | b;
+                    colors.set(key, (colors.get(key) || 0) + 1);
                 }
 
+                // Get the two most common colors (paper usually more common than ink)
                 const sorted = [...colors.entries()].sort((a, b) => b[1] - a[1]);
                 const paperKey = sorted[0] ? sorted[0][0] : 0;
                 const inkKey = sorted[1] ? sorted[1][0] : paperKey;
-                const paperR = (paperKey >> 16) & 0xFF, paperG = (paperKey >> 8) & 0xFF, paperB = paperKey & 0xFF;
-                const inkR = (inkKey >> 16) & 0xFF, inkG = (inkKey >> 8) & 0xFF, inkB = inkKey & 0xFF;
-                const sameColor = (paperKey === inkKey);
 
-                // Fill entire cell with paper
-                for (let ly = 0; ly < 8; ly++) {
-                    for (let px = 0; px < 8; px++) {
-                        const idx = ((cellY + ly) * dims.width + cellX + px) * 4;
-                        data[idx] = paperR;
-                        data[idx + 1] = paperG;
-                        data[idx + 2] = paperB;
-                        data[idx + 3] = 255;
-                    }
-                }
+                const paperColor = [(paperKey >> 16) & 0xFF, (paperKey >> 8) & 0xFF, paperKey & 0xFF];
+                const inkColor = [(inkKey >> 16) & 0xFF, (inkKey >> 8) & 0xFF, inkKey & 0xFF];
 
-                // Draw diagonal X cross in ink (only if ink differs from paper)
-                if (!sameColor) {
-                    for (let d = 0; d < 8; d++) {
-                        // Top-left to bottom-right diagonal
-                        const idx1 = ((cellY + d) * dims.width + cellX + d) * 4;
-                        data[idx1] = inkR; data[idx1 + 1] = inkG; data[idx1 + 2] = inkB;
-                        // Top-right to bottom-left diagonal
-                        const idx2 = ((cellY + d) * dims.width + cellX + 7 - d) * 4;
-                        data[idx2] = inkR; data[idx2 + 1] = inkG; data[idx2 + 2] = inkB;
-                    }
+                // Draw 8 pixels of this scanline with diagonal cross pattern
+                for (let px = 0; px < 8; px++) {
+                    const x = cellX + px;
+                    const idx = (visY * dims.width + x) * 4;
+
+                    // Draw X pattern: pixels on diagonals use ink, others use paper
+                    const onDiagonal = (px === lineInCell) || (px === 7 - lineInCell);
+                    const color = onDiagonal ? inkColor : paperColor;
+
+                    tempImageData.data[idx] = color[0];
+                    tempImageData.data[idx + 1] = color[1];
+                    tempImageData.data[idx + 2] = color[2];
+                    tempImageData.data[idx + 3] = 255;
                 }
             }
         }
@@ -3213,10 +2970,6 @@ export class Spectrum {
     start(force = false) {
         if (!force && (this.running || !this.romLoaded)) {
             return;
-        }
-        if (this._bpTStatesResetPending) {
-            this.breakpointTStates = 0;
-            this._bpTStatesResetPending = false;
         }
 
         // If forcing, ensure we're stopped first to clear any stale timers
@@ -3404,67 +3157,10 @@ export class Spectrum {
         }
     }
 
-    // ========== Debugging - Call Stack Tracking ==========
-
-    // Track CALL/RST/INT (push) and RET/RETI/RETN (pop) by observing SP changes.
-    // oldPC = PC before instruction, oldSP = SP before instruction.
-    // After instruction: this.cpu.pc = new PC, this.cpu.sp = new SP.
-    _trackCallStack(oldPC, oldSP) {
-        const newSP = this.cpu.sp;
-        const newPC = this.cpu.pc;
-        const spDelta = (oldSP - newSP) & 0xFFFF;
-
-        if (spDelta === 0) return; // No SP change
-
-        if (spDelta === 2) {
-            // SP decreased by 2 — possible CALL/RST (PUSH also decreases by 2)
-            // Read the value that was pushed onto the stack (return address)
-            const pushed = this.memory.read(newSP) | (this.memory.read((newSP + 1) & 0xFFFF) << 8);
-            // For CALL nn: return addr = oldPC+3; for RST: return addr = oldPC+1
-            // For CALL with DD/FD prefix: return addr = oldPC+4
-            // Check if pushed value is a plausible return address (within 1-4 bytes of oldPC)
-            // PUSH reg pushes register values, not return addresses — filtered out here
-            const diff = (pushed - oldPC) & 0xFFFF;
-            if (diff >= 1 && diff <= 4) {
-                // CALL/RST detected — newPC is the target
-                if (this._debugCallStack.length < this._debugCallStackMaxDepth) {
-                    this._debugCallStack.push({ addr: newPC, caller: oldPC });
-                }
-            }
-        } else if (spDelta === 0xFFFE) {
-            // SP increased by 2 — possible RET (POP also increases by 2)
-            // Verify: for RET, newPC equals the value popped from [oldSP]
-            // For POP reg, newPC = oldPC+1/+2 which won't match the popped data value
-            const popped = this.memory.read(oldSP) | (this.memory.read((oldSP + 1) & 0xFFFF) << 8);
-            if (newPC === popped && this._debugCallStack.length > 0) {
-                this._debugCallStack.pop();
-            }
-        } else {
-            // SP changed by something other than ±2 (LD SP,nn / LD SP,HL / etc.)
-            // Stack frame is no longer valid — reset call stack
-            this._debugCallStack = [];
-        }
-    }
-
-    // Track interrupt as a call (pushes PC onto stack, jumps to handler)
-    _trackInterruptCall(oldPC, oldSP) {
-        const newSP = this.cpu.sp;
-        const newPC = this.cpu.pc;
-        if (((oldSP - newSP) & 0xFFFF) === 2) {
-            if (this._debugCallStack.length < this._debugCallStackMaxDepth) {
-                this._debugCallStack.push({ addr: newPC, caller: oldPC, isInt: true });
-            }
-        }
-    }
-
     // ========== Debugging - Stepping ==========
 
     stepInto() {
         if (this.running || !this.romLoaded) return false;
-        if (this._bpTStatesResetPending) {
-            this.breakpointTStates = 0;
-            this._bpTStatesResetPending = false;
-        }
 
         // If CPU is halted, run until INT fires and CPU exits HALT
         if (this.cpu.halted) {
@@ -3490,20 +3186,11 @@ export class Spectrum {
             ];
         }
         this.autoMap.inExecution = true;
-        const tBefore = this.cpu.tStates;
-        const _siOldPC = this.cpu.pc, _siOldSP = this.cpu.sp;
         this.cpu.step();
-        this._trackCallStack(_siOldPC, _siOldSP);
         this.autoMap.inExecution = false;
 
         // Handle frame boundary crossing during stepping (with late timing support)
-        const frameCrossed = this.handleFrameBoundary();
-        // Accumulate T-states for breakpoint counter (account for frame wrap)
-        if (frameCrossed) {
-            this.breakpointTStates += (this.getTstatesPerFrame() - tBefore) + this.cpu.tStates;
-        } else {
-            this.breakpointTStates += this.cpu.tStates - tBefore;
-        }
+        this.handleFrameBoundary();
 
         // Record trace after execution (includes port/mem ops)
         if (tracing) {
@@ -3531,11 +3218,10 @@ export class Spectrum {
             cycles += 4;
         }
 
-        this.breakpointTStates += cycles;
         this.renderToScreen();
         return !this.cpu.halted;
     }
-
+    
     // Redraw current screen (for grid toggle when paused)
     redraw() {
         if (!this.romLoaded) return;
@@ -3564,7 +3250,7 @@ export class Spectrum {
         }
 
         // Handle border-only modes: replace paper area with border color
-        const borderOnlyMode = this.overlayMode === 'screen' || this.overlayMode === 'reveal' || this.overlayMode === 'beamscreen';
+        const borderOnlyMode = this.overlayMode === 'screen' || this.overlayMode === 'beamscreen';
         if (borderOnlyMode) {
             const dims = this.ula.getDimensions();
             const changes = this.ula.borderChanges;
@@ -3649,10 +3335,6 @@ export class Spectrum {
     // Run until PC reaches target address (or max cycles exceeded)
     runToAddress(targetAddr, maxCycles = 10000000) {
         if (this.running || !this.romLoaded) return false;
-        if (this._bpTStatesResetPending) {
-            this.breakpointTStates = 0;
-            this._bpTStatesResetPending = false;
-        }
         this.autoMap.inExecution = true;
         const tracing = this.traceEnabled && this.onBeforeStep;
         const tstatesPerFrame = this.getTstatesPerFrame();
@@ -3665,10 +3347,8 @@ export class Spectrum {
             if (this.cpu.pc !== startPC && this.cpu.pc !== targetAddr && this.hasBreakpointAt(this.cpu.pc)) {
                 this.breakpointHit = true;
                 this.autoMap.inExecution = false;
-                this.breakpointTStates += cycles;
                 this.renderToScreen();
                 if (this.onBreakpoint) this.onBreakpoint(this.cpu.pc);
-                this._bpTStatesResetPending = true;
                 return false;
             }
             // Clear trace ops and capture PC/bytes before execution
@@ -3686,9 +3366,7 @@ export class Spectrum {
                     this.memory.read((instrPC + 3) & 0xffff)
                 ];
             }
-            const _rtaOldPC = this.cpu.pc, _rtaOldSP = this.cpu.sp;
             cycles += this.cpu.step();
-            this._trackCallStack(_rtaOldPC, _rtaOldSP);
 
             // Handle frame boundary crossing (with late timing support)
             this.handleFrameBoundary();
@@ -3699,7 +3377,6 @@ export class Spectrum {
             }
         }
         this.autoMap.inExecution = false;
-        this.breakpointTStates += cycles;
         // Render current screen state
         this.renderToScreen();
         return this.cpu.pc === targetAddr;
@@ -3774,7 +3451,7 @@ export class Spectrum {
 
     // Get interrupt timing offset (0 for early, 4 for late timing)
     getIntOffset() {
-        return (this.lateTimings && this.profile.earlyIntTiming) ? this.INT_LATE_OFFSET : 0;
+        return this.lateTimings ? this.INT_LATE_OFFSET : 0;
     }
 
     // Handle frame boundary crossing and interrupt firing with late timing support
@@ -3798,9 +3475,7 @@ export class Spectrum {
                     console.log(`[INT-step] FIRED at T=${this.cpu.tStates}, pendingIntAt=${this.pendingIntAt}, halted=${this.cpu.halted}`);
                 }
                 this.pendingInt = false;
-                const _fbOldPC = this.cpu.pc, _fbOldSP = this.cpu.sp;
                 this.cpu.interrupt();
-                this._trackInterruptCall(_fbOldPC, _fbOldSP);
                 // Adjust T-states for next frame
                 if (this.cpu.tStates >= tstatesPerFrame) {
                     this.cpu.tStates -= tstatesPerFrame;
@@ -3847,10 +3522,6 @@ export class Spectrum {
     // Run until next interrupt
     runToInterrupt(maxCycles = 10000000) {
         if (this.running || !this.romLoaded) return false;
-        if (this._bpTStatesResetPending) {
-            this.breakpointTStates = 0;
-            this._bpTStatesResetPending = false;
-        }
         this.autoMap.inExecution = true;
         const tracing = this.traceEnabled && this.onBeforeStep;
         let cycles = 0;
@@ -3864,7 +3535,6 @@ export class Spectrum {
             if (this.handleFrameBoundary()) {
                 // Interrupt was fired
                 this.autoMap.inExecution = false;
-                this.breakpointTStates += cycles;
                 this.renderToScreen();
                 return true;
             }
@@ -3873,10 +3543,8 @@ export class Spectrum {
             if (this.cpu.pc !== startPC && this.hasBreakpointAt(this.cpu.pc)) {
                 this.breakpointHit = true;
                 this.autoMap.inExecution = false;
-                this.breakpointTStates += cycles;
                 this.renderToScreen();
                 if (this.onBreakpoint) this.onBreakpoint(this.cpu.pc);
-                this._bpTStatesResetPending = true;
                 return false;
             }
 
@@ -3895,9 +3563,7 @@ export class Spectrum {
                     this.memory.read((instrPC + 3) & 0xffff)
                 ];
             }
-            const _rtiOldPC = this.cpu.pc, _rtiOldSP = this.cpu.sp;
             cycles += this.cpu.step();
-            this._trackCallStack(_rtiOldPC, _rtiOldSP);
             // Record trace after execution
             if (tracing) {
                 this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps, instrBytes);
@@ -3905,7 +3571,6 @@ export class Spectrum {
         }
 
         this.autoMap.inExecution = false;
-        this.breakpointTStates += cycles;
         this.renderToScreen();
         return false;
     }
@@ -3913,10 +3578,6 @@ export class Spectrum {
     // Run until RET instruction is executed
     runToRet(maxCycles = 10000000) {
         if (this.running || !this.romLoaded) return false;
-        if (this._bpTStatesResetPending) {
-            this.breakpointTStates = 0;
-            this._bpTStatesResetPending = false;
-        }
         this.autoMap.inExecution = true;
         const tracing = this.traceEnabled && this.onBeforeStep;
         const tstatesPerFrame = this.getTstatesPerFrame();
@@ -3955,15 +3616,12 @@ export class Spectrum {
                     ];
                 }
                 // Execute the RET and stop after
-                const _rtrOldPC = this.cpu.pc, _rtrOldSP = this.cpu.sp;
                 cycles += this.cpu.step();
-                this._trackCallStack(_rtrOldPC, _rtrOldSP);
                 // Record trace after execution
                 if (tracing) {
                     this.onBeforeStep(this.cpu, this.memory, instrPC, this.tracePortOps, this.traceMemOps, instrBytes);
                 }
                 this.autoMap.inExecution = false;
-                this.breakpointTStates += cycles;
                 this.renderToScreen();
                 return true;
             }
@@ -3972,10 +3630,8 @@ export class Spectrum {
             if (this.hasBreakpointAt(this.cpu.pc)) {
                 this.breakpointHit = true;
                 this.autoMap.inExecution = false;
-                this.breakpointTStates += cycles;
                 this.renderToScreen();
                 if (this.onBreakpoint) this.onBreakpoint(this.cpu.pc);
-                this._bpTStatesResetPending = true;
                 return false;
             }
 
@@ -3994,9 +3650,7 @@ export class Spectrum {
                     this.memory.read((instrPC + 3) & 0xffff)
                 ];
             }
-            const _rtrlOldPC = this.cpu.pc, _rtrlOldSP = this.cpu.sp;
             cycles += this.cpu.step();
-            this._trackCallStack(_rtrlOldPC, _rtrlOldSP);
 
             // Handle frame boundary crossing (with late timing support)
             this.handleFrameBoundary();
@@ -4015,10 +3669,6 @@ export class Spectrum {
     // Run for specified number of T-states (ignores breakpoints for precise timing)
     runTstates(tstates) {
         if (this.running || !this.romLoaded) return 0;
-        if (this._bpTStatesResetPending) {
-            this.breakpointTStates = 0;
-            this._bpTStatesResetPending = false;
-        }
         this.autoMap.inExecution = true;
         const tracing = this.traceEnabled && this.onBeforeStep;
         let executed = 0;
@@ -4044,9 +3694,7 @@ export class Spectrum {
                 ];
             }
             const before = this.cpu.tStates;
-            const _rtsOldPC = this.cpu.pc, _rtsOldSP = this.cpu.sp;
             this.cpu.step();
-            this._trackCallStack(_rtsOldPC, _rtsOldSP);
             executed += this.cpu.tStates - before;
             // Record trace after execution
             if (tracing) {
@@ -4055,7 +3703,6 @@ export class Spectrum {
         }
 
         this.autoMap.inExecution = false;
-        this.breakpointTStates += executed;
         this.renderToScreen();
         return executed;
     }
@@ -4586,117 +4233,6 @@ export class Spectrum {
 
     // ========== Memory Callback Optimization ==========
 
-    // ========== Runtime Profiler ==========
-
-    startProfiling(maxFrames = 200) {
-        this.profiler.enabled = true;
-        this.profiler.maxFrames = maxFrames;
-        this.profiler.framesRemaining = maxFrames;
-        this.profiler.startFrame = this.totalFrames;
-        this.profiler.subroutines.clear();
-        this.profiler.im2 = null;
-        this.profiler.tStatesPerPC.clear();
-        this.updateMemoryCallbacksFlag();
-    }
-
-    stopProfiling() {
-        if (!this.profiler.enabled) return;
-        this.profiler.enabled = false;
-        const framesProfiled = this.profiler.maxFrames - this.profiler.framesRemaining;
-        const results = {
-            framesProfiled,
-            subroutines: new Map(this.profiler.subroutines),
-            im2: this.profiler.im2,
-            tStatesPerPC: new Map(this.profiler.tStatesPerPC),
-            totalTStates: framesProfiled * this.getTstatesPerFrame()
-        };
-        this.updateMemoryCallbacksFlag();
-        if (this.profiler.onComplete) this.profiler.onComplete(results);
-    }
-
-    _profilerCurrentSub() {
-        const stack = this._debugCallStack;
-        if (stack.length === 0) return null;
-        return stack[stack.length - 1];
-    }
-
-    _profilerGetOrCreateStats(entryAddr) {
-        const key = this.getAutoMapKey(entryAddr);
-        let stats = this.profiler.subroutines.get(key);
-        if (!stats) {
-            stats = {
-                entryAddr,
-                page: (this.memory.machineType === '48k') ? null :
-                      (entryAddr >= 0xC000 ? String(this.memory.currentRamBank) :
-                       entryAddr < 0x4000 ? 'R' + this.memory.currentRomBank : null),
-                callCount: 0,
-                portsIn: new Set(),
-                portsOut: new Set(),
-                writesScreenBitmap: false,
-                writesScreenAttr: false,
-                readsScreenBitmap: false,
-                readsScreenAttr: false,
-                calledFromISR: false,
-                callees: new Set(),
-                callers: new Set(),
-                framesCalled: new Set(),
-                beeperOuts: 0
-            };
-            this.profiler.subroutines.set(key, stats);
-        }
-        return stats;
-    }
-
-    _profilerTrackCallRet(oldPC, oldSP) {
-        const newSP = this.cpu.sp;
-        const newPC = this.cpu.pc;
-        const spDelta = (oldSP - newSP) & 0xFFFF;
-        const frame = this.totalFrames - this.profiler.startFrame;
-
-        if (spDelta === 2) {
-            // Possible CALL/RST — verify via return address
-            const pushed = this.memory.read(newSP) | (this.memory.read((newSP + 1) & 0xFFFF) << 8);
-            const diff = (pushed - oldPC) & 0xFFFF;
-            if (diff >= 1 && diff <= 4) {
-                // CALL/RST confirmed — record entry
-                const stats = this._profilerGetOrCreateStats(newPC);
-                stats.callCount++;
-                stats.callers.add(oldPC);
-                stats.framesCalled.add(frame);
-
-                // Check ISR context — walk up call stack
-                for (const entry of this._debugCallStack) {
-                    if (entry.isInt) { stats.calledFromISR = true; break; }
-                }
-
-                // Record callee relationship with caller
-                const parentEntry = this._debugCallStack.length >= 2
-                    ? this._debugCallStack[this._debugCallStack.length - 2]
-                    : null;
-                if (parentEntry) {
-                    const parentKey = this.getAutoMapKey(parentEntry.addr);
-                    const parentStats = this.profiler.subroutines.get(parentKey);
-                    if (parentStats) parentStats.callees.add(newPC);
-                }
-            }
-        }
-        // RET handled implicitly — _debugCallStack pop already happened
-    }
-
-    // ========== POKE Write Trace ==========
-
-    startPokeWriteTrace() {
-        this.pokeWriteTraceAddrs = new Set();
-        this.pokeWriteTraceEnabled = true;
-        this.updateMemoryCallbacksFlag();
-    }
-
-    stopPokeWriteTrace() {
-        this.pokeWriteTraceEnabled = false;
-        this.updateMemoryCallbacksFlag();
-        return this.pokeWriteTraceAddrs;
-    }
-
     /**
      * Update memory/CPU callbacks based on current feature state
      * Sets callbacks to null when not needed (zero overhead)
@@ -4706,9 +4242,7 @@ export class Spectrum {
         const needsMemoryCallbacks =
             this.triggers.length > 0 ||
             this.autoMap.enabled ||
-            this.runtimeTraceEnabled ||
-            this.profiler.enabled ||
-            this.pokeWriteTraceEnabled;
+            this.runtimeTraceEnabled;
 
         // Set callbacks to null when not needed (eliminates function call overhead)
         this.memory.onRead = needsMemoryCallbacks ? this._memoryReadCallback : null;
@@ -4736,13 +4270,11 @@ export class Spectrum {
      * @returns {number} Index of added trigger, or -1 if duplicate
      */
     addTrigger(trigger) {
-        const isMedia = trigger.type === 'tape_block' || trigger.type === 'disk_read' || trigger.type === 'disk_sector';
-
         // Normalize trigger
         const t = {
             type: trigger.type || 'exec',
-            start: isMedia ? (trigger.start || 0) : trigger.start & 0xffff,
-            end: isMedia ? (trigger.end !== undefined ? trigger.end : 0) : (trigger.end !== undefined ? trigger.end : trigger.start) & 0xffff,
+            start: trigger.start & 0xffff,
+            end: (trigger.end !== undefined ? trigger.end : trigger.start) & 0xffff,
             page: trigger.page !== undefined ? trigger.page : null,
             mask: trigger.mask !== undefined ? trigger.mask : 0xffff,
             condition: trigger.condition || '',
@@ -4760,27 +4292,8 @@ export class Spectrum {
 
         // Check for duplicate
         for (const existing of this.triggers) {
-            if (existing.type !== t.type) continue;
-            // tape_block and disk_read: only one of each type
-            if (t.type === 'tape_block' || t.type === 'disk_read') {
-                if (t.skipCount !== existing.skipCount) {
-                    existing.skipCount = t.skipCount;
-                    existing.hitCount = 0;
-                }
-                return this.triggers.indexOf(existing);
-            }
-            // disk_sector: same track + sector = duplicate
-            if (t.type === 'disk_sector') {
-                if (existing.start === t.start && existing.end === t.end) {
-                    if (t.skipCount !== existing.skipCount) {
-                        existing.skipCount = t.skipCount;
-                        existing.hitCount = 0;
-                    }
-                    return this.triggers.indexOf(existing);
-                }
-                continue;
-            }
-            if (existing.start === t.start &&
+            if (existing.type === t.type &&
+                existing.start === t.start &&
                 existing.end === t.end &&
                 existing.page === t.page &&
                 existing.mask === t.mask) {
@@ -4859,22 +4372,6 @@ export class Spectrum {
         let str = '';
         const isPort = t.type.startsWith('port');
 
-        if (t.type === 'tape_block') {
-            str = 'TAPE';
-            if (t.condition) str += ' if ' + t.condition;
-            return str;
-        }
-        if (t.type === 'disk_read') {
-            str = 'DISK';
-            if (t.condition) str += ' if ' + t.condition;
-            return str;
-        }
-        if (t.type === 'disk_sector') {
-            str = 'T' + String(t.start).padStart(2, '0') + ':S' + String(t.end).padStart(2, '0');
-            if (t.condition) str += ' if ' + t.condition;
-            return str;
-        }
-
         if (isPort) {
             // Port trigger
             const padLen = t.start > 0xff ? 4 : 2;
@@ -4912,10 +4409,7 @@ export class Spectrum {
             rw: 'RW',
             port_in: '⇐',
             port_out: '⇒',
-            port_io: '⇔',
-            tape_block: 'T',
-            disk_read: 'D',
-            disk_sector: 'S'
+            port_io: '⇔'
         };
         return icons[type] || '?';
     }
@@ -4931,10 +4425,7 @@ export class Spectrum {
             rw: 'R/W',
             port_in: 'Port IN',
             port_out: 'Port OUT',
-            port_io: 'Port I/O',
-            tape_block: 'Tape Block',
-            disk_read: 'Disk Read',
-            disk_sector: 'Disk Sector'
+            port_io: 'Port I/O'
         };
         return labels[type] || type;
     }
@@ -4984,41 +4475,6 @@ export class Spectrum {
         for (const t of this.triggers) {
             if (!types.includes(t.type) || !t.enabled) continue;
             if (this._matchesPortTrigger(t, port, val)) {
-                t.hitCount++;
-                if (t.hitCount > t.skipCount) {
-                    return t;
-                }
-            }
-        }
-        return null;
-    }
-
-    checkTapeBlockTrigger(blockIndex) {
-        for (const t of this.triggers) {
-            if (t.type !== 'tape_block' || !t.enabled) continue;
-            t.hitCount++;
-            if (t.hitCount > t.skipCount) {
-                return t;
-            }
-        }
-        return null;
-    }
-
-    checkDiskReadTrigger() {
-        for (const t of this.triggers) {
-            if (t.type !== 'disk_read' || !t.enabled) continue;
-            t.hitCount++;
-            if (t.hitCount > t.skipCount) {
-                return t;
-            }
-        }
-        return null;
-    }
-
-    checkDiskSectorTrigger(track, sector) {
-        for (const t of this.triggers) {
-            if (t.type !== 'disk_sector' || !t.enabled) continue;
-            if (t.start === track && t.end === sector) {
                 t.hitCount++;
                 if (t.hitCount > t.skipCount) {
                     return t;
@@ -5319,9 +4775,7 @@ export class Spectrum {
     setMouseButton(button, pressed) {
         // Buttons are active low (0 = pressed, 1 = released)
         // button: 0=left, 1=middle, 2=right
-        // Default: left=bit1, right=bit0. Swap: left=bit0, right=bit1
-        const swap = this.kempstonMouseSwapButtons;
-        const bit = button === 0 ? (swap ? 0 : 1) : (button === 1 ? 2 : (swap ? 1 : 0));
+        const bit = button === 0 ? 1 : (button === 1 ? 2 : 0); // left=bit1, middle=bit2, right=bit0
         if (pressed) {
             this.kempstonMouseButtons &= ~(1 << bit);
         } else {
@@ -5332,7 +4786,6 @@ export class Spectrum {
     // Mouse wheel update (0-15, wrapping)
     updateMouseWheel(delta) {
         // delta > 0 = scroll down, delta < 0 = scroll up
-        if (this.kempstonMouseSwapWheel) delta = -delta;
         // Scroll up increases wheel value
         if (delta < 0) {
             this.kempstonMouseWheel = (this.kempstonMouseWheel + 1) & 0x0f;
@@ -6385,14 +5838,11 @@ export class Spectrum {
         const oldFullBorderMode = this.ula ? this.ula.fullBorderMode : false;
         const oldPalette = this.ula ? this.ula.palette : null;
         const oldPaletteId = this.ula ? this.ula.paletteId : null;
-        // Use persistent setting, not runtime state (which may be modified by test runner)
-        const ulaplusSetting = typeof localStorage !== 'undefined'
-            ? localStorage.getItem('zxm8_ulaplus') === 'true' : false;
+        const oldUlaplusEnabled = this.ula ? this.ula.ulaplus.enabled : false;
 
         this.machineType = type;
         this.profile = getMachineProfile(type);
         this.ayEnabled = this.profile.ayDefault;  // Update AY enabled state for new machine type
-        if (this.profile.betaDiskDefault) this.betaDiskEnabled = true;  // Enable Beta Disk for Pentagon/Scorpion
         if (this.ay) this.ay.reset();  // Stop any playing AY sound
         this.memory = new Memory(type);
         this.ula = new ULA(this.memory, type);
@@ -6414,20 +5864,12 @@ export class Spectrum {
             this.ula.palette = oldPalette;
             this.ula.paletteId = oldPaletteId;
         }
-        // Restore ULAplus enabled state from user setting, not runtime state
-        this.ula.ulaplus.enabled = ulaplusSetting;
+        // Restore ULAplus enabled state (checkbox) but reset palette to defaults
+        this.ula.ulaplus.enabled = oldUlaplusEnabled;
         this.ula.resetULAplus();  // Reset palette, paletteEnabled, register to defaults
         this.updateDisplayDimensions();  // Recreate imageData for new ULA dimensions
         this.tapeTrap = new TapeTrapHandler(this.cpu, this.memory, this.tapeLoader);
         this.tapeTrap.setEnabled(this.tapeTrapsEnabled && this.tapeFlashLoad);
-        this.tapeTrap.onBlockLoaded = (loadedBlockIndex) => {
-            const tapeTrigger = this.checkTapeBlockTrigger(loadedBlockIndex);
-            if (tapeTrigger) {
-                this.tapeBlockHit = true;
-                this.triggerHit = true;
-                this.lastTrigger = { trigger: tapeTrigger, blockIndex: loadedBlockIndex, type: 'tape_block' };
-            }
-        };
 
         // Recreate TR-DOS trap with new CPU/memory, preserve disk data
         const oldDiskData = this.trdosTrap ? this.trdosTrap.diskData : null;
@@ -6837,18 +6279,14 @@ export class Spectrum {
             offset += fd.length;
         }
 
-        // Compress frame data using pako (like eric.rzx)
+        // Compress frame data (like eric.rzx)
         let frameData;
         let isCompressed = false;
-        if (typeof pako !== 'undefined') {
-            try {
-                frameData = pako.deflate(uncompressedFrameData);
-                isCompressed = true;
-            } catch (e) {
-                console.warn('[RZX] Compression failed, using uncompressed:', e);
-                frameData = uncompressedFrameData;
-            }
-        } else {
+        try {
+            frameData = pako.deflate(uncompressedFrameData);
+            isCompressed = true;
+        } catch (e) {
+            console.warn('[RZX] Compression failed, using uncompressed:', e);
             frameData = uncompressedFrameData;
         }
 
@@ -7128,15 +6566,14 @@ export class Spectrum {
     exportPortLog(filter = 'both') {
         const hex4 = v => v.toString(16).toUpperCase().padStart(4, '0');
         const hex2 = v => v.toString(16).toUpperCase().padStart(2, '0');
-        const lines = ['Dir\tPort\tValue\tPC\tSrc\tFrame\tT-states'];
+        const lines = ['Dir\tPort\tValue\tPC\tFrame\tT-states'];
         let count = 0;
         for (const entry of this.portLog) {
             // Apply filter
             if (filter === 'in' && entry.dir !== 'IN') continue;
             if (filter === 'out' && entry.dir !== 'OUT') continue;
             const frameStr = entry.frame >= 0 ? entry.frame : '-';
-            const src = entry.src || '';
-            lines.push(`${entry.dir}\t${hex4(entry.port)}\t${hex2(entry.value)}\t${hex4(entry.pc)}\t${src}\t${frameStr}\t${entry.t}`);
+            lines.push(`${entry.dir}\t${hex4(entry.port)}\t${hex2(entry.value)}\t${hex4(entry.pc)}\t${frameStr}\t${entry.t}`);
             count++;
         }
         return { text: lines.join('\n'), count };
@@ -7175,16 +6612,6 @@ export class Spectrum {
 
     getPortTraceFilters() {
         return this.portTraceFilters;
-    }
-
-    getPortSource() {
-        const pc = this.cpu.pc;
-        if (pc >= 0x4000) return '';
-        const mem = this.memory;
-        if (mem.specialPagingMode) return 'RAM';
-        if (mem.trdosActive) return 'TRDOS';
-        if (mem.ramInRomMode || mem.scorpionRamInRomMode) return 'RAM';
-        return 'ROM:' + mem.currentRomBank;
     }
 
     matchesPortTraceFilter(port) {
@@ -7258,216 +6685,6 @@ export class Spectrum {
         };
     }
 
-    // ========== Static Code-Flow Analysis ==========
-
-    /**
-     * Classify a disassembled instruction's control flow.
-     * @param {string} mnemonic - Instruction mnemonic string
-     * @param {Array} refs - Refs array from disassembler (may be undefined)
-     * @returns {{ flow: string, unconditional: boolean, target: number|null, indirect: boolean }}
-     */
-    _classifyInstruction(mnemonic, refs) {
-        const m = mnemonic.trim();
-        const target = (refs && refs.length > 0) ? refs[0].target : null;
-
-        // RET / RETI / RETN
-        if (m === 'RET' || m === 'RETI' || m === 'RETN') {
-            return { flow: 'ret', unconditional: true, target: null, indirect: false };
-        }
-        if (m.startsWith('RET ')) {
-            return { flow: 'ret', unconditional: false, target: null, indirect: false };
-        }
-
-        // HALT
-        if (m === 'HALT') {
-            return { flow: 'halt', unconditional: true, target: null, indirect: false };
-        }
-
-        // JP (HL) / JP (IX) / JP (IY)
-        if (m === 'JP (HL)' || m === 'JP (IX)' || m === 'JP (IY)') {
-            return { flow: 'branch', unconditional: true, target: null, indirect: true };
-        }
-
-        // RST xx
-        if (m.startsWith('RST ')) {
-            return { flow: 'rst', unconditional: true, target: target, indirect: false };
-        }
-
-        // DJNZ
-        if (m.startsWith('DJNZ')) {
-            return { flow: 'branch', unconditional: false, target: target, indirect: false };
-        }
-
-        const ccRegex = /^(NZ|Z|NC|C|PO|PE|P|M),/i;
-
-        // JP / JR
-        if (m.startsWith('JP ') || m.startsWith('JR ')) {
-            const keyword = m.startsWith('JP') ? 'JP ' : 'JR ';
-            const rest = m.substring(keyword.length);
-            const conditional = ccRegex.test(rest);
-            return { flow: 'branch', unconditional: !conditional, target: target, indirect: false };
-        }
-
-        // CALL
-        if (m.startsWith('CALL ')) {
-            const rest = m.substring(5);
-            const conditional = ccRegex.test(rest);
-            return { flow: 'call', unconditional: !conditional, target: target, indirect: false };
-        }
-
-        // Everything else
-        return { flow: 'linear', unconditional: true, target: null, indirect: false };
-    }
-
-    /**
-     * Check if an address should be skipped during code-flow analysis.
-     */
-    _cfaShouldSkip(addr, skipRom, visited, isDataRegion) {
-        if (addr < 0 || addr > 0xFFFF) return true;
-        if (visited.has(addr)) return true;
-        if (skipRom && addr < 0x4000) return true;
-        if (isDataRegion && isDataRegion(addr)) return true;
-        return false;
-    }
-
-    /**
-     * Static code-flow analysis via recursive descent disassembly.
-     * Follows control flow from entry points to identify code regions,
-     * subroutine entries, and cross-references.
-     *
-     * @param {Object} options
-     * @param {number[]} options.entryPoints - Starting addresses
-     * @param {boolean} [options.skipRom=true] - Skip ROM area (0x0000-0x3FFF)
-     * @param {function} [options.isDataRegion] - Callback: addr => bool
-     * @param {function} [options.onProgress] - Callback: (processed, queued) => void
-     * @param {number} [options.maxInstructions=100000] - Safety limit
-     * @returns {Promise<{codeAddresses: Set, callTargets: Set, xrefs: Array, indirectJumps: Array, warnings: Array}>}
-     */
-    async analyzeCodeFlow(options) {
-        const {
-            entryPoints = [],
-            skipRom = true,
-            isDataRegion = null,
-            onProgress = null,
-            maxInstructions = 100000
-        } = options;
-
-        const visited = new Set();
-        const codeAddresses = new Set();
-        const callTargets = new Set();
-        const xrefs = [];
-        const indirectJumps = [];
-        const warnings = [];
-
-        // BFS queue — seed with entry points
-        const queue = [];
-        for (const ep of entryPoints) {
-            const addr = ep & 0xFFFF;
-            if (!this._cfaShouldSkip(addr, skipRom, visited, isDataRegion)) {
-                queue.push(addr);
-            }
-        }
-
-        const disasm = new Disassembler(this.memory);
-        let processed = 0;
-        let lastYield = Date.now();
-
-        while (queue.length > 0) {
-            if (processed >= maxInstructions) {
-                warnings.push(`Stopped after ${maxInstructions} instructions (safety limit)`);
-                break;
-            }
-
-            const startAddr = queue.shift();
-            if (this._cfaShouldSkip(startAddr, skipRom, visited, isDataRegion)) {
-                continue;
-            }
-
-            // Walk linearly from startAddr
-            let pc = startAddr;
-            while (pc <= 0xFFFF) {
-                if (this._cfaShouldSkip(pc, skipRom, visited, isDataRegion)) {
-                    break;
-                }
-                if (processed >= maxInstructions) break;
-
-                visited.add(pc);
-                const result = disasm.disassemble(pc, true);
-                processed++;
-
-                // Mark all instruction bytes as code
-                for (let i = 0; i < result.length; i++) {
-                    codeAddresses.add((pc + i) & 0xFFFF);
-                }
-
-                // Collect refs as xrefs
-                if (result.refs) {
-                    for (const ref of result.refs) {
-                        xrefs.push({ from: pc, target: ref.target, type: ref.type });
-                    }
-                }
-
-                const classified = this._classifyInstruction(result.mnemonic, result.refs);
-
-                if (classified.flow === 'ret') {
-                    // Unconditional ret: end path; conditional ret: continue fall-through
-                    if (classified.unconditional) break;
-                    pc = (pc + result.length) & 0xFFFF;
-                } else if (classified.flow === 'halt') {
-                    break;
-                } else if (classified.indirect) {
-                    // JP (HL)/(IX)/(IY) — cannot follow
-                    indirectJumps.push(pc);
-                    warnings.push(`Indirect jump at $${pc.toString(16).toUpperCase().padStart(4, '0')}: ${result.mnemonic}`);
-                    break;
-                } else if (classified.flow === 'branch') {
-                    if (classified.target !== null && !this._cfaShouldSkip(classified.target, skipRom, visited, isDataRegion)) {
-                        queue.push(classified.target);
-                    }
-                    if (classified.unconditional) {
-                        break; // No fall-through
-                    }
-                    pc = (pc + result.length) & 0xFFFF;
-                } else if (classified.flow === 'call') {
-                    if (classified.target !== null) {
-                        callTargets.add(classified.target);
-                        if (!this._cfaShouldSkip(classified.target, skipRom, visited, isDataRegion)) {
-                            queue.push(classified.target);
-                        }
-                    }
-                    pc = (pc + result.length) & 0xFFFF;
-                } else if (classified.flow === 'rst') {
-                    if (classified.target !== null) {
-                        callTargets.add(classified.target);
-                        if (classified.target === 0) {
-                            // RST 0 = reset, end path
-                            break;
-                        }
-                        if (!this._cfaShouldSkip(classified.target, skipRom, visited, isDataRegion)) {
-                            queue.push(classified.target);
-                        }
-                    }
-                    pc = (pc + result.length) & 0xFFFF;
-                } else {
-                    // Linear
-                    pc = (pc + result.length) & 0xFFFF;
-                }
-
-                // Yield to UI every 20ms
-                const now = Date.now();
-                if (now - lastYield >= 20) {
-                    if (onProgress) onProgress(processed, queue.length);
-                    await new Promise(r => setTimeout(r, 0));
-                    lastYield = Date.now();
-                }
-            }
-        }
-
-        if (onProgress) onProgress(processed, 0);
-
-        return { codeAddresses, callTargets, xrefs, indirectJumps, warnings };
-    }
-
     // ========== Utility ==========
 
     getFps() { return this.actualFps; }
@@ -7528,7 +6745,7 @@ class AudioManager {
     }
 
     /**
-     * Start audio output using AudioWorklet (or ScriptProcessorNode fallback)
+     * Start audio output using AudioWorklet
      */
     async start() {
         if (this.context) return;
@@ -7548,19 +6765,16 @@ class AudioManager {
             this.gainNode.gain.value = this.muted ? 0 : this.volume;
             this.gainNode.connect(this.context.destination);
 
-            if (this.context.audioWorklet) {
-                // Modern path: AudioWorklet (requires secure context)
-                await this.context.audioWorklet.addModule('audio-processor.js');
-                this.workletNode = new AudioWorkletNode(this.context, 'zx-audio-processor', {
-                    numberOfInputs: 0,
-                    numberOfOutputs: 1,
-                    outputChannelCount: [2]
-                });
-                this.workletNode.connect(this.gainNode);
-            } else {
-                // Fallback: ScriptProcessorNode (works over plain HTTP)
-                this._initScriptProcessor();
-            }
+            // Load AudioWorklet module
+            await this.context.audioWorklet.addModule('audio-processor.js');
+
+            // Create AudioWorkletNode
+            this.workletNode = new AudioWorkletNode(this.context, 'zx-audio-processor', {
+                numberOfInputs: 0,
+                numberOfOutputs: 1,
+                outputChannelCount: [2]
+            });
+            this.workletNode.connect(this.gainNode);
 
             // Resume context (may be suspended due to autoplay policy)
             if (this.context.state === 'suspended') {
@@ -7575,58 +6789,12 @@ class AudioManager {
     }
 
     /**
-     * Initialize ScriptProcessorNode fallback for non-secure contexts
-     */
-    _initScriptProcessor() {
-        const bufferSize = 8192;
-        const ringL = new Float32Array(bufferSize);
-        const ringR = new Float32Array(bufferSize);
-        let writePos = 0;
-        let readPos = 0;
-
-        this.scriptNode = this.context.createScriptProcessor(2048, 0, 2);
-        this.scriptNode.onaudioprocess = (e) => {
-            const outL = e.outputBuffer.getChannelData(0);
-            const outR = e.outputBuffer.getChannelData(1);
-            for (let i = 0; i < outL.length; i++) {
-                if (readPos !== writePos) {
-                    outL[i] = ringL[readPos];
-                    outR[i] = ringR[readPos];
-                    readPos = (readPos + 1) % bufferSize;
-                } else {
-                    outL[i] = 0;
-                    outR[i] = 0;
-                }
-            }
-        };
-        this.scriptNode.connect(this.gainNode);
-
-        // Expose write function for flushSamples
-        this._scriptRing = { ringL, ringR, bufferSize };
-        this._scriptWritePos = () => writePos;
-        this._scriptWrite = (left, right) => {
-            for (let i = 0; i < left.length; i++) {
-                ringL[writePos] = left[i];
-                ringR[writePos] = right[i];
-                writePos = (writePos + 1) % bufferSize;
-            }
-        };
-    }
-
-    /**
      * Stop audio output
      */
     stop() {
         if (this.workletNode) {
             this.workletNode.disconnect();
             this.workletNode = null;
-        }
-        if (this.scriptNode) {
-            this.scriptNode.disconnect();
-            this.scriptNode = null;
-            this._scriptWrite = null;
-            this._scriptRing = null;
-            this._scriptWritePos = null;
         }
         if (this.gainNode) {
             this.gainNode.disconnect();
@@ -7668,25 +6836,16 @@ class AudioManager {
     }
 
     /**
-     * Send buffered samples to audio output
+     * Send buffered samples to AudioWorklet
      */
     flushSamples() {
-        if (this.sendBufferPos === 0) return;
+        if (!this.workletNode || this.sendBufferPos === 0) return;
 
-        if (this.workletNode) {
-            this.workletNode.port.postMessage({
-                left: this.sendBufferL.slice(0, this.sendBufferPos),
-                right: this.sendBufferR.slice(0, this.sendBufferPos)
-            });
-        } else if (this._scriptWrite) {
-            this._scriptWrite(
-                this.sendBufferL.slice(0, this.sendBufferPos),
-                this.sendBufferR.slice(0, this.sendBufferPos)
-            );
-        } else {
-            this.sendBufferPos = 0;
-            return;
-        }
+        // Send samples to worklet
+        this.workletNode.port.postMessage({
+            left: this.sendBufferL.slice(0, this.sendBufferPos),
+            right: this.sendBufferR.slice(0, this.sendBufferPos)
+        });
         this.sendBufferPos = 0;
     }
 
@@ -7699,7 +6858,7 @@ class AudioManager {
      * @param {Array} tapeAudioChanges - Array of {tStates, level} tape signal changes
      */
     processFrame(frameTstates, beeperChanges = [], beeperLevel = 0, tapeAudioChanges = []) {
-        if (!this.enabled || (!this.workletNode && !this.scriptNode)) return;
+        if (!this.enabled || !this.workletNode) return;
 
         // Generate samples for this frame
         const samplesToGenerate = this.samplesPerFrame;

@@ -271,23 +271,6 @@ export function initInputHandler(spectrum, showMessage) {
             'Mouse wheel disabled');
     });
 
-    // Mouse Swap L/R checkbox
-    const chkMouseSwap = document.getElementById('chkMouseSwap');
-    chkMouseSwap.addEventListener('change', () => {
-        spectrum.kempstonMouseSwapButtons = chkMouseSwap.checked;
-        showMessage(chkMouseSwap.checked ?
-            'Mouse buttons swapped (left\u2194right)' :
-            'Mouse buttons normal');
-    });
-
-    const chkMouseWheelSwap = document.getElementById('chkMouseWheelSwap');
-    chkMouseWheelSwap.addEventListener('change', () => {
-        spectrum.kempstonMouseSwapWheel = chkMouseWheelSwap.checked;
-        showMessage(chkMouseWheelSwap.checked ?
-            'Mouse wheel direction swapped' :
-            'Mouse wheel direction normal');
-    });
-
     // Kempston Mouse
     chkKempstonMouse.addEventListener('change', () => {
         spectrum.kempstonMouseEnabled = chkKempstonMouse.checked;

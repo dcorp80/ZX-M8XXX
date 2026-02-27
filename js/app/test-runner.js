@@ -35,12 +35,13 @@ class TestRunner {
             expectedCanvas: document.getElementById('testsExpectedCanvas'),
             actualCanvas: document.getElementById('testsActualCanvas'),
             chkHighlightDiff: document.getElementById('chkHighlightDiff'),
-            summarySection: document.getElementById('testsSummaryStats'),
+            summarySection: document.getElementById('testsSummarySection'),
             passed: document.getElementById('testsPassed'),
             failed: document.getElementById('testsFailed'),
             skipped: document.getElementById('testsSkipped'),
             time: document.getElementById('testsTime'),
             fps: document.getElementById('testsFps'),
+            resultsBody: document.getElementById('testsResultsBody'),
             // Preview mode elements
             btnPreview: document.getElementById('btnPreviewTest'),
             btnPausePreview: document.getElementById('btnPausePreview'),
@@ -133,7 +134,6 @@ class TestRunner {
                 <td class="tests-col-machine">${test.machine || '48k'}</td>
                 <td class="tests-col-file">${this.escapeHtml(test.file)}</td>
                 <td class="tests-col-result tests-result-pending">${isEnabled ? '-' : 'disabled'}</td>
-                <td class="tests-col-details"></td>
             `;
             tbody.appendChild(tr);
         }
@@ -298,13 +298,13 @@ class TestRunner {
                     } else {
                         failed++;
                         const detail = result.diff ? `${result.diff.diffCount} pixels` : result.error || 'FAIL';
-                        this.setTestResult(test.id, 'fail', 'FAIL', detail);
+                        this.setTestResult(test.id, 'fail', detail);
                     }
                 } catch (e) {
                     failed++;
                     totalFramesRun += this.totalFrames;
                     this.results.push({ test, result: { passed: false, error: e.message } });
-                    this.setTestResult(test.id, 'fail', 'FAIL', e.message);
+                    this.setTestResult(test.id, 'fail', e.message);
                 }
             }
 
@@ -339,14 +339,12 @@ class TestRunner {
         }
     }
 
-    setTestResult(testId, status, text, detail) {
+    setTestResult(testId, status, text) {
         const row = this.elements.tableBody.querySelector(`tr[data-test-id="${testId}"]`);
         if (row) {
             const td = row.querySelector('.tests-col-result');
             td.textContent = text;
             td.className = `tests-col-result tests-result-${status}`;
-            const dtd = row.querySelector('.tests-col-details');
-            if (dtd) dtd.textContent = detail || '';
         }
     }
 
@@ -1307,18 +1305,24 @@ class TestRunner {
     }
 
     renderResultsSummary() {
-        // Update details column in existing test rows
+        const tbody = this.elements.resultsBody;
+        tbody.innerHTML = '';
+
         for (const { test, result } of this.results) {
+            const tr = document.createElement('tr');
+            const status = result.passed ? 'PASS' : 'FAIL';
+            const statusClass = result.passed ? 'tests-result-pass' : 'tests-result-fail';
+            let detail = '-';
             if (!result.passed) {
-                let detail = '';
                 if (result.error) detail = result.error;
-                else if (result.diff) detail = `Step ${(result.step || 0) + 1}, frame ${result.frame}: ${result.diff.diffCount} px`;
-                const row = this.elements.tableBody.querySelector(`tr[data-test-id="${test.id}"]`);
-                if (row) {
-                    const dtd = row.querySelector('.tests-col-details');
-                    if (dtd) dtd.textContent = detail;
-                }
+                else if (result.diff) detail = `Step ${(result.step || 0) + 1}, frame ${result.frame}: ${result.diff.diffCount} pixels differ`;
             }
+            tr.innerHTML = `
+                <td>${this.escapeHtml(test.name)}</td>
+                <td class="${statusClass}">${status}</td>
+                <td>${this.escapeHtml(detail)}</td>
+            `;
+            tbody.appendChild(tr);
         }
     }
 

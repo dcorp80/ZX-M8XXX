@@ -4,6 +4,7 @@
  * @license GPL-3.0
  */
 
+import pako from 'pako';
 import { getMachineByZ80HwMode, getMachineBySzxId } from './machines.js';
 import {
     PAGE_SIZE,
@@ -1935,7 +1936,6 @@ export class BetaDisk {
         this.NOT_READY = 0x80;
 
         this.intrq = false;        // Interrupt request
-        this.multiSector = false;  // Multi-sector flag (m bit in Type II commands)
     }
 
     // Load disk image into specified drive (default: drive 0)
@@ -2146,7 +2146,10 @@ export class BetaDisk {
         const logicalTrack = track * 2 + side;
         // WD1793 sectors are 1-16, convert to 0-based index
         const sectorIndex = (logicalTrack * this.sectorsPerTrack) + (sector - 1);
-        // Sector range is 1-16 on TRD
+        // Handle sector 0 as invalid but don't crash
+        if (sector < 1 || sector > 16) {
+            console.warn(`[BetaDisk] Invalid sector ${sector} for track ${track}`);
+        }
         return sectorIndex * this.bytesPerSector;
     }
 
@@ -2156,11 +2159,7 @@ export class BetaDisk {
 
         switch (reg) {
             case 0x1F: // Status register
-                // Note: on real WD1793, reading status clears INTRQ.
-                // But in our instant-completion model, clearing here causes
-                // TR-DOS to miss INTRQ when it reads status (error check)
-                // before polling port $FF. INTRQ is already cleared when
-                // a new command is issued (executeCommand), which is sufficient.
+                this.intrq = false;
                 if (!this.currentDisk.diskData) {
                     return this.NOT_READY;
                 }
@@ -2191,68 +2190,16 @@ export class BetaDisk {
 
             case 0x7F: // Data register
                 if (this.reading && this.dataBuffer && this.dataPos < this.dataLen) {
-                    this._sysReadsSinceData = 0;  // Reset lost data counter
                     this.data = this.dataBuffer[this.dataPos++];
                     if (this.dataPos >= this.dataLen) {
-                        if (this.multiSector) {
-                            // Multi-sector: advance to next sector and continue reading
-                            this.sector++;
-                            if (this.sector > this.sectorsPerTrack) {
-                                // Past last sector on this side — stop
-                                this.reading = false;
-                                this.multiSector = false;
-                                this.status &= ~(this.BUSY | this.DRQ);
-                                this.intrq = true;
-                            } else {
-                                // Read next sector
-                                this.readSector();
-                            }
-                        } else {
-                            this.reading = false;
-                            this.status &= ~(this.BUSY | this.DRQ);
-                            this.intrq = true;
-                        }
+                        this.reading = false;
+                        this.status &= ~(this.BUSY | this.DRQ);  // Clear both BUSY and DRQ
+                        this.intrq = true;
                     }
                 }
                 return this.data;
 
             case 0xFF: // System register
-                // Lost Data simulation: On real WD1793, data bytes arrive at the
-                // disk rotation rate. If the CPU polls the system register instead
-                // of reading data from port $7F, bytes are "lost" and the sector
-                // eventually completes with INTRQ. In our instant-completion model,
-                // we detect this by tracking consecutive system register polls
-                // without any port $7F data reads. After enough polls without data
-                // reads, we auto-complete the sector. This handles games/loaders
-                // that issue Read Sector and only poll for INTRQ.
-                if (this.reading && this.dataBuffer && this.dataPos < this.dataLen) {
-                    this._sysReadsSinceData = (this._sysReadsSinceData || 0) + 1;
-                    // After 2+ consecutive system register reads without a data read,
-                    // treat remaining bytes as lost and complete the sector.
-                    // The threshold of 2 allows the normal read loop pattern
-                    // (check $FF → read $7F → check $FF) to work correctly,
-                    // while catching loops that only poll $FF without reading $7F.
-                    if (this._sysReadsSinceData >= 2) {
-                        // Complete current sector (lost data)
-                        this.dataPos = this.dataLen;
-                        this.status |= this.LOST_DATA;
-                        if (this.multiSector) {
-                            this.sector++;
-                            if (this.sector > this.sectorsPerTrack) {
-                                this.reading = false;
-                                this.multiSector = false;
-                                this.status &= ~(this.BUSY | this.DRQ);
-                                this.intrq = true;
-                            } else {
-                                this.readSector();
-                            }
-                        } else {
-                            this.reading = false;
-                            this.status &= ~(this.BUSY | this.DRQ);
-                            this.intrq = true;
-                        }
-                    }
-                }
                 let sys = 0;
                 if (this.intrq) sys |= 0x80;        // INTRQ
                 if (this.reading || this.writing) sys |= 0x40;  // DRQ
@@ -2287,22 +2234,9 @@ export class BetaDisk {
                     if (this.dataPos >= this.dataLen) {
                         // Write buffer to disk
                         this.flushWriteBuffer();
-                        if (this.multiSector) {
-                            // Multi-sector: advance to next sector and continue writing
-                            this.sector++;
-                            if (this.sector > this.sectorsPerTrack) {
-                                this.writing = false;
-                                this.multiSector = false;
-                                this.status &= ~this.BUSY;
-                                this.intrq = true;
-                            } else {
-                                this.writeSector();
-                            }
-                        } else {
-                            this.writing = false;
-                            this.status &= ~this.BUSY;
-                            this.intrq = true;
-                        }
+                        this.writing = false;
+                        this.status &= ~this.BUSY;
+                        this.intrq = true;
                     }
                 }
                 break;
@@ -2335,7 +2269,6 @@ export class BetaDisk {
         this.command = cmd;
         this.status = 0;
         this.intrq = false;
-        this._sysReadsSinceData = 0;  // Reset lost data counter for new command
 
         if (!this.currentDisk.diskData) {
             this.status = this.NOT_READY;
@@ -2384,7 +2317,6 @@ export class BetaDisk {
         // Type II commands (read/write sector)
         if ((cmd & 0xC0) === 0x80) {
             this.lastCmdType = 2;
-            this.multiSector = !!(cmd & 0x10);  // Bit 4 = multiple sectors
             this.status = this.BUSY;  // Clear all status bits except BUSY (no HEAD_LOADED for Type II)
 
             if ((cmd & 0x20) === 0) {
@@ -2402,7 +2334,6 @@ export class BetaDisk {
             // Don't change lastCmdType - Force Interrupt preserves previous type
             this.reading = false;
             this.writing = false;
-            this.multiSector = false;
             this.status &= ~this.BUSY;
             this.status |= this.HEAD_LOADED;  // Head stays loaded
             if (this.track === 0) this.status |= this.TRACK0;
@@ -2416,7 +2347,7 @@ export class BetaDisk {
             if ((cmd & 0xF0) === 0xC0) {
                 // Read address - return track/side/sector/size
                 this.dataBuffer = new Uint8Array([
-                    this.currentDisk.headTrack, this.side, this.sector, 1, 0, 0
+                    this.track, this.side, this.sector, 1, 0, 0
                 ]);
                 this.dataPos = 0;
                 this.dataLen = 6;
@@ -2445,6 +2376,7 @@ export class BetaDisk {
         }
 
         if (offset + this.bytesPerSector > drv.diskData.length) {
+            console.warn(`[BetaDisk] READ failed: offset ${offset} + ${this.bytesPerSector} > ${drv.diskData.length}`);
             this.status |= this.RNF;
             this.status &= ~this.BUSY;
             this.intrq = true;
@@ -3136,53 +3068,16 @@ export class RZXLoader {
     }
 
     async decompress(data, expectedSize) {
-        // Prefer pako if available (more reliable error handling)
-        if (typeof pako !== 'undefined') {
-            // Try zlib format first (with header), then raw deflate
+        // Try zlib format first (with header), then raw deflate
+        try {
+            return pako.inflate(data);
+        } catch (e1) {
             try {
-                return pako.inflate(data);
-            } catch (e1) {
-                try {
-                    return pako.inflateRaw(data);
-                } catch (e2) {
-                    // Both failed - throw combined error
-                    throw new Error('Decompression failed');
-                }
-            }
-        }
-
-        // Fallback to DecompressionStream (modern browsers without pako)
-        if (typeof DecompressionStream !== 'undefined') {
-            try {
-                const ds = new DecompressionStream('deflate-raw');
-                const writer = ds.writable.getWriter();
-                writer.write(data);
-                writer.close();
-
-                const reader = ds.readable.getReader();
-                const chunks = [];
-                let totalLen = 0;
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    chunks.push(value);
-                    totalLen += value.length;
-                }
-
-                const result = new Uint8Array(totalLen);
-                let offset = 0;
-                for (const chunk of chunks) {
-                    result.set(chunk, offset);
-                    offset += chunk.length;
-                }
-                return result;
-            } catch (e) {
+                return pako.inflateRaw(data);
+            } catch (e2) {
                 throw new Error('Decompression failed');
             }
         }
-
-        throw new Error('No decompression method available. Include pako.js for RZX support.');
     }
 
     getSnapshot() {
@@ -3736,13 +3631,10 @@ export class SZXLoader {
     }
 
     /**
-     * Decompress zlib data (requires pako)
+     * Decompress zlib data
      */
     static decompress(data) {
-        if (typeof pako !== 'undefined') {
-            return pako.inflate(data);
-        }
-        throw new Error('pako library required for SZX decompression');
+        return pako.inflate(data);
     }
 
     /**
@@ -4014,20 +3906,17 @@ export class SZXLoader {
      * Create a RAMP (RAM Page) chunk with optional compression
      */
     static makeRAMPChunk(pageNum, pageData) {
-        // Try to compress with pako if available
         let compressed = null;
         let useCompression = false;
 
-        if (typeof pako !== 'undefined') {
-            try {
-                compressed = pako.deflate(pageData);
-                // Only use compression if it actually saves space
-                if (compressed.length < pageData.length - 100) {
-                    useCompression = true;
-                }
-            } catch (e) {
-                // Compression failed, use uncompressed
+        try {
+            compressed = pako.deflate(pageData);
+            // Only use compression if it actually saves space
+            if (compressed.length < pageData.length - 100) {
+                useCompression = true;
             }
+        } catch (e) {
+            // Compression failed, use uncompressed
         }
 
         const data = useCompression ? compressed : pageData;

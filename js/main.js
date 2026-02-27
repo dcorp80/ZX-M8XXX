@@ -12,7 +12,7 @@
 //   app/        — state, ui-framework, test-runner, rom-manager, emulator-control,
 //                  input-handler, display-sound, media-io, project-io
 
-const APP_VERSION = '0.9.37';
+const APP_VERSION = '0.9.27';
 
 // ── Core ────────────────────────────────────────────────────────────
 import { Spectrum } from './core/spectrum.js';
@@ -23,7 +23,6 @@ import { getMachineProfile, getMachineTypes, MACHINE_PROFILES, DEFAULT_VISIBLE_M
 
 // ── sjasmplus ───────────────────────────────────────────────────────
 import { Assembler as SjASMPlus } from './sjasmplus/assembler.js';
-import { VFS } from './sjasmplus/vfs.js';
 
 // ── Data ────────────────────────────────────────────────────────────
 import { REGION_TYPES, OPERAND_FORMATS } from './data/region-types.js';
@@ -60,7 +59,6 @@ import { SubroutineManager } from './managers/subroutine-manager.js';
 import { FoldManager } from './managers/fold-manager.js';
 import { UndoManager } from './managers/undo-manager.js';
 import { TraceManager } from './managers/trace-manager.js';
-import { SignaturePackManager } from './managers/signature-pack-manager.js';
 
 // ── Views ───────────────────────────────────────────────────────────
 import {
@@ -96,24 +94,14 @@ import {
     doSearch, doSearchNext
 } from './views/panel-manager.js';
 import { initCompareTool } from './views/compare-tool.js';
-import {
-    initExplorerTab, buildTapeCatalog, buildDiskCatalog, updateTapePosition
-} from './views/explorer-tab.js';
+import { initExplorerTab } from './views/explorer-tab.js';
 import { initGraphicsViewer, updateGraphicsViewer } from './views/graphics-viewer.js';
 import {
-    initAssemblerTab, showTraceEntry, formatMnemonic, updateXrefStats
+    initAssemblerTab, showTraceEntry, formatMnemonic
 } from './views/assembler-tab.js';
 import { initFrameExport } from './views/frame-export.js';
 import { initGameBrowser } from './views/game-browser.js';
 import { initRzxRecording } from './views/rzx-recording.js';
-import { initSignaturesUI } from './views/signatures-ui.js';
-import {
-    initGameMapper, handleMapperKeydown, mapperUpdateUI, mapperCaptureScreen
-} from './views/game-mapper.js';
-import {
-    initPokeManager, loadPokeJSON, getPokeState, restorePokeState, stopPokeWriteTracing
-} from './views/poke-manager.js';
-import { initProfilerUI } from './views/profiler-ui.js';
 
 // ── App orchestration ───────────────────────────────────────────────
 import { setState } from './app/state.js';
@@ -143,10 +131,8 @@ import {
     getLoadedPalettes
 } from './app/display-sound.js';
 import {
-    updateBetaDiskStatus as _updateBetaDiskStatus,
-    updateDriveSelector as _updateDriveSelector,
-    getSelectedDriveIndex,
-    updateMediaIndicator as _updateMediaIndicator, handleDiskInserted, handleLoadResult,
+    updateBetaDiskStatus, updateDriveSelector, getSelectedDriveIndex,
+    updateMediaIndicator, handleDiskInserted, handleLoadResult,
     showZipSelection, quicksave, quickload,
     cancelAutoLoad, startAutoLoadTape, startAutoLoadDisk, startAutoLoadPlus3Disk,
     describeTapeBlock, getExportBaseName,
@@ -161,7 +147,7 @@ const leftNavHistory = [];
 const rightNavHistory = [];
 
 // Wire cross-module deps to break circular imports
-setRomManagerDeps({ updateBetaDiskStatus: _updateBetaDiskStatus });
+setRomManagerDeps({ updateBetaDiskStatus });
 
 // ═════════════════════════════════════════════════════════════════════
 // 1. Create manager instances
@@ -176,8 +162,6 @@ const subroutineManager   = new SubroutineManager();
 const foldManager         = new FoldManager();
 const undoManager         = new UndoManager();
 const traceManager        = new TraceManager();
-const signaturePackManager = new SignaturePackManager();
-signaturePackManager.setAssembler(SjASMPlus, VFS);
 
 // ═════════════════════════════════════════════════════════════════════
 // 2. DOM element refs (toolbar + core)
@@ -275,8 +259,6 @@ const ixiyRegisters     = document.getElementById('ixiyRegisters');
 const indexRegisters    = document.getElementById('indexRegisters');
 const flagsDisplay      = document.getElementById('flagsDisplay');
 const statusRegisters   = document.getElementById('statusRegisters');
-const regRItem          = document.getElementById('regRItem');
-const callStackView     = document.getElementById('callStackView');
 const pagesInfo         = document.getElementById('pagesInfo');
 
 // Disk activity
@@ -309,11 +291,6 @@ let spectrum = new Spectrum(canvas, {
     overlayCanvas: overlayCanvas
 });
 window.spectrum = spectrum;
-
-// Wrap media-io functions that take spectrum as a parameter
-const updateMediaIndicator = (name, type, driveIdx) => _updateMediaIndicator(name, type, driveIdx, spectrum);
-const updateBetaDiskStatus = () => _updateBetaDiskStatus(spectrum);
-const updateDriveSelector = () => _updateDriveSelector(spectrum);
 
 // Disassembler (created on first use or after machine type change)
 let disasm = null;
@@ -430,11 +407,6 @@ initULAplusPaletteGrid();
 // ═════════════════════════════════════════════════════════════════════
 
 applyOpcodeFilters();
-
-document.getElementById('opcodeSearch').addEventListener('input', applyOpcodeFilters);
-document.getElementById('opcodeGroup').addEventListener('change', applyOpcodeFilters);
-document.getElementById('opcodeCycles').addEventListener('change', applyOpcodeFilters);
-document.getElementById('opcodeSort').addEventListener('change', applyOpcodeFilters);
 
 // ═════════════════════════════════════════════════════════════════════
 // 9. Initialize view modules
@@ -563,8 +535,7 @@ initExplorerTab({
     hex16,
     showMessage,
     updateDriveSelector,
-    updateMediaIndicator,
-    getSelectedDriveIndex
+    updateMediaIndicator
 });
 
 // Graphics viewer
@@ -586,7 +557,6 @@ initAssemblerTab({
     hex16,
     downloadFile,
     updateDebugger,
-    updateLabelsList,
     goToAddress,
     labelManager,
     regionManager,
@@ -632,41 +602,6 @@ initRzxRecording({
     getExportBaseName
 });
 
-// Signature packs UI
-initSignaturesUI({
-    signaturePackManager,
-    spectrum,
-    labelManager,
-    regionManager,
-    showMessage,
-    updateDebugger,
-    ZipLoader
-});
-
-// Game Mapper
-initGameMapper({ spectrum });
-
-// POKE Manager
-initPokeManager({
-    spectrum,
-    showMessage,
-    hex8,
-    hex16,
-    goToMemoryAddress
-});
-
-// Profiler UI
-initProfilerUI({
-    spectrum,
-    labelManager,
-    regionManager,
-    REGION_TYPES,
-    navigateToAddress: goToAddress,
-    showMessage,
-    updateLabelsList,
-    updateDebugger
-});
-
 // Text scanner
 initTextScanner({
     spectrum,
@@ -699,17 +634,10 @@ const testRunner = new TestRunner(spectrum, {
     updateULAplusStatus: () => updateULAplusStatus(spectrum),
     applyPalette: (id) => applyPalette(id, spectrum),
     updateCanvasSize: () => updateCanvasSize(spectrum),
-    updateMediaIndicator,
+    updateMediaIndicator: (name, type, driveIdx) => updateMediaIndicator(name, type, driveIdx, spectrum),
     resetDisasm: () => { disasm = null; }
 });
 setState({ testRunner });
-
-// Open ROM dialog from Settings panel
-document.getElementById('btnSettingsLoadRoms').addEventListener('click', () => {
-    updateRomStatus();
-    document.getElementById('btnCloseRomModal').classList.remove('hidden');
-    document.getElementById('romModal').classList.remove('hidden');
-});
 
 // Initialize ROM modal event handlers
 initRomModalHandlers({
@@ -1040,7 +968,6 @@ altRegisters.addEventListener('click', regClickHandler);
 ixiyRegisters.addEventListener('click', regClickHandler);
 indexRegisters.addEventListener('click', regClickHandler);
 statusRegisters.addEventListener('click', regClickHandler);
-regRItem.addEventListener('click', regClickHandler);
 pagesInfo.addEventListener('click', regClickHandler);
 
 // Flag toggle
@@ -1601,8 +1528,6 @@ machineSelect.addEventListener('change', () => {
         return;
     }
 
-    stopPokeWriteTracing();
-
     const wasRunning = spectrum.isRunning();
     if (wasRunning) spectrum.stop();
 
@@ -1723,75 +1648,6 @@ if (chkInvertDisplay) {
     });
 }
 
-// Theme toggle
-const themeToggle = document.getElementById('themeToggle');
-let darkTheme = localStorage.getItem('zx-theme') !== 'light';
-document.body.classList.toggle('light-theme', !darkTheme);
-themeToggle.textContent = darkTheme ? '☀️' : '🌙';
-
-themeToggle.addEventListener('click', () => {
-    darkTheme = !darkTheme;
-    document.body.classList.toggle('light-theme', !darkTheme);
-    themeToggle.textContent = darkTheme ? '☀️' : '🌙';
-    localStorage.setItem('zx-theme', darkTheme ? 'dark' : 'light');
-});
-
-// Overlay display mode
-const overlaySelect = document.getElementById('overlaySelect');
-overlaySelect.addEventListener('change', () => {
-    spectrum.setOverlayMode(overlaySelect.value);
-    spectrum.redraw();
-});
-
-// Late timings checkbox (default: false - early ULA behavior)
-const chkLateTimings = document.getElementById('chkLateTimings');
-if (chkLateTimings) {
-    const savedLateTimings = localStorage.getItem('zxm8_lateTiming') === 'true';
-    chkLateTimings.checked = savedLateTimings;
-    spectrum.setLateTimings(savedLateTimings);
-
-    chkLateTimings.addEventListener('change', () => {
-        spectrum.setLateTimings(chkLateTimings.checked);
-        localStorage.setItem('zxm8_lateTiming', chkLateTimings.checked);
-        showMessage(chkLateTimings.checked ? 'Late timings enabled' : 'Early timings enabled');
-    });
-}
-
-// ULAplus checkbox
-const chkULAplus = document.getElementById('chkULAplus');
-if (chkULAplus) {
-    const savedULAplus = localStorage.getItem('zxm8_ulaplus') === 'true';
-    chkULAplus.checked = savedULAplus;
-    spectrum.ula.ulaplus.enabled = savedULAplus;
-    updateULAplusStatus(spectrum);
-
-    chkULAplus.addEventListener('change', () => {
-        spectrum.ula.ulaplus.enabled = chkULAplus.checked;
-        localStorage.setItem('zxm8_ulaplus', chkULAplus.checked);
-        updateULAplusStatus(spectrum);
-        spectrum.redraw();
-        showMessage(chkULAplus.checked ? 'ULA+ enabled' : 'ULA+ disabled');
-    });
-}
-
-// Reset ULAplus palette
-const btnResetULAplus = document.getElementById('btnResetULAplus');
-if (btnResetULAplus) {
-    btnResetULAplus.addEventListener('click', () => {
-        spectrum.ula.resetULAplus();
-        updateULAplusStatus(spectrum);
-        spectrum.redraw();
-        showMessage('ULAplus palette reset');
-    });
-}
-
-// Update ULAplus status periodically when palette is active
-setInterval(() => {
-    if (spectrum.ula.ulaplus.enabled && spectrum.ula.ulaplus.paletteEnabled) {
-        updateULAplusStatus(spectrum);
-    }
-}, 500);
-
 // ═════════════════════════════════════════════════════════════════════
 // 25. Global keyboard shortcuts
 // ═════════════════════════════════════════════════════════════════════
@@ -1799,9 +1655,6 @@ setInterval(() => {
 document.addEventListener('keydown', (e) => {
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     if (e.target.isContentEditable || getIsEditingRegister()) return;
-
-    // Game Mapper keyboard shortcuts (Ctrl+Space, Ctrl+Arrows, Ctrl+PgUp/PgDn)
-    if (handleMapperKeydown(e)) return;
 
     // Ctrl+Z - Undo
     if (e.ctrlKey && e.key === 'z' && !spectrum.isRunning()) {
@@ -1830,192 +1683,6 @@ document.addEventListener('keydown', (e) => {
             if (typeof window.updateTraceList === 'function') window.updateTraceList();
             showMessage('Returned to live view');
         }
-        return;
-    }
-
-    // PageUp/PageDown - Scroll disassembly view
-    if (e.key === 'PageUp' || e.key === 'PageDown') {
-        e.preventDefault();
-        const disasm = getDisasm();
-        if (!disasm) return;
-        const delta = e.key === 'PageDown' ? DISASM_LINES * 2 : -(DISASM_LINES * 2);
-        const lpt = getLeftPanelType();
-        const rpt = getRightPanelType();
-        if (lpt === 'disasm') {
-            let dva = getDisasmViewAddress();
-            if (dva === null && spectrum.cpu) dva = spectrum.cpu.pc;
-            if (dva !== null) {
-                setDisasmViewAddress((dva + delta) & 0xffff);
-                const disasmAddressInput = document.getElementById('disasmAddress');
-                if (disasmAddressInput) disasmAddressInput.value = hex16((dva + delta) & 0xffff);
-                updateDebugger();
-            }
-        } else if (rpt === 'disasm') {
-            let rdva = getRightDisasmViewAddress();
-            if (rdva === null && spectrum.cpu) rdva = spectrum.cpu.pc;
-            if (rdva !== null) {
-                goToRightDisasmAddress(rdva + delta);
-            }
-        }
-        return;
-    }
-
-    // Paused-mode hotkeys: bookmarks and tilde-run
-    if (!spectrum.isRunning() && !e.ctrlKey && !e.altKey) {
-        // Tilde (`) - Resume emulation
-        if (e.key === '`' || e.key === '~') {
-            e.preventDefault();
-            if (spectrum.romLoaded) {
-                spectrum.start();
-                updateStatus();
-                showMessage('Resumed');
-            }
-            return;
-        }
-
-        // ArrowUp/ArrowDown - scroll disasm by 1 line
-        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
-            e.preventDefault();
-            const disasm = getDisasm();
-            if (!disasm) return;
-            const delta = e.key === 'ArrowDown' ? 2 : -2;
-            const lpt = getLeftPanelType();
-            const rpt = getRightPanelType();
-            if (lpt === 'disasm') {
-                let dva = getDisasmViewAddress();
-                if (dva === null && spectrum.cpu) dva = spectrum.cpu.pc;
-                if (dva !== null) {
-                    setDisasmViewAddress((dva + delta) & 0xffff);
-                    const disasmAddressInput = document.getElementById('disasmAddress');
-                    if (disasmAddressInput) disasmAddressInput.value = hex16((dva + delta) & 0xffff);
-                    updateDebugger();
-                }
-            } else if (rpt === 'disasm') {
-                let rdva = getRightDisasmViewAddress();
-                if (rdva === null && spectrum.cpu) rdva = spectrum.cpu.pc;
-                if (rdva !== null) {
-                    goToRightDisasmAddress(rdva + delta);
-                }
-            }
-            return;
-        }
-
-        // Digit code to index mapping (works regardless of Shift)
-        const digitCode = e.code;
-        const digitMatch = digitCode && digitCode.match(/^Digit(\d)$/);
-        if (digitMatch) {
-            const digit = digitMatch[1];
-            const leftMap = { '1': 0, '2': 1, '3': 2, '4': 3, '5': 4 };
-            const rightMap = { '6': 0, '7': 1, '8': 2, '9': 3, '0': 4 };
-            const lpt = getLeftPanelType();
-            const rpt = getRightPanelType();
-            const leftBookmarks = getLeftBookmarks();
-            const rightBookmarks = getRightBookmarks();
-
-            if (!e.shiftKey) {
-                // Jump to bookmark
-                if (digit in leftMap && lpt !== 'calc') {
-                    e.preventDefault();
-                    const bm = leftBookmarks[leftMap[digit]];
-                    if (bm !== null) {
-                        const addr = typeof bm === 'object' ? bm.addr : bm;
-                        const type = typeof bm === 'object' ? bm.type : 'disasm';
-                        if (type !== lpt) switchLeftPanelType(type);
-                        if (lpt === 'disasm') goToAddress(addr);
-                        else goToLeftMemoryAddress(addr);
-                    }
-                    return;
-                }
-                if (digit in rightMap && rpt !== 'calc') {
-                    e.preventDefault();
-                    const bm = rightBookmarks[rightMap[digit]];
-                    if (bm !== null) {
-                        const addr = typeof bm === 'object' ? bm.addr : bm;
-                        const type = typeof bm === 'object' ? bm.type : 'memdump';
-                        if (type !== rpt) switchRightPanelType(type);
-                        if (rpt === 'memdump') goToMemoryAddress(addr);
-                        else goToRightDisasmAddress(addr);
-                    }
-                    return;
-                }
-            } else {
-                // Shift+digit: set bookmark at current address
-                if (digit in leftMap && lpt !== 'calc') {
-                    e.preventDefault();
-                    const idx = leftMap[digit];
-                    let addr, type = lpt;
-                    if (type === 'disasm') {
-                        const dva = getDisasmViewAddress();
-                        addr = dva !== null ? dva : (spectrum.cpu ? spectrum.cpu.pc : null);
-                    } else {
-                        addr = getLeftMemoryViewAddress();
-                    }
-                    if (addr !== null) {
-                        const oldBm = leftBookmarks[idx];
-                        leftBookmarks[idx] = { addr, type };
-                        const disasmBookmarksBar = document.getElementById('disasmBookmarks');
-                        updateBookmarkButtons(disasmBookmarksBar, leftBookmarks, 'left');
-                        undoManager.push({
-                            type: 'bookmark',
-                            description: oldBm !== null ? `Update left bookmark ${idx + 1}` : `Set left bookmark ${idx + 1}`,
-                            undo: () => { leftBookmarks[idx] = oldBm; updateBookmarkButtons(disasmBookmarksBar, leftBookmarks, 'left'); },
-                            redo: () => { leftBookmarks[idx] = { addr, type }; updateBookmarkButtons(disasmBookmarksBar, leftBookmarks, 'left'); }
-                        });
-                        showMessage(`Left bookmark ${idx + 1} set to ${hex16(addr)}`);
-                    }
-                    return;
-                }
-                if (digit in rightMap && rpt !== 'calc') {
-                    e.preventDefault();
-                    const idx = rightMap[digit];
-                    let addr, type = rpt;
-                    const memoryViewAddress = getMemoryViewAddress();
-                    if (type === 'memdump') {
-                        addr = memoryViewAddress;
-                    } else {
-                        const rdva = getRightDisasmViewAddress();
-                        addr = rdva !== null ? rdva : (spectrum.cpu ? spectrum.cpu.pc : null);
-                    }
-                    if (addr !== null) {
-                        const oldBm = rightBookmarks[idx];
-                        rightBookmarks[idx] = { addr, type };
-                        const memoryBookmarksBar = document.getElementById('memoryBookmarks');
-                        updateBookmarkButtons(memoryBookmarksBar, rightBookmarks, 'right');
-                        undoManager.push({
-                            type: 'bookmark',
-                            description: oldBm !== null ? `Update right bookmark ${idx + 1}` : `Set right bookmark ${idx + 1}`,
-                            undo: () => { rightBookmarks[idx] = oldBm; updateBookmarkButtons(memoryBookmarksBar, rightBookmarks, 'right'); },
-                            redo: () => { rightBookmarks[idx] = { addr, type }; updateBookmarkButtons(memoryBookmarksBar, rightBookmarks, 'right'); }
-                        });
-                        showMessage(`Right bookmark ${idx + 1} set to ${hex16(addr)}`);
-                    }
-                    return;
-                }
-            }
-        }
-    }
-
-    // F1 - Cycle zoom (x1 -> x2 -> x3 -> x1)
-    if (e.key === 'F1') {
-        e.preventDefault();
-        const cz = getCurrentZoom();
-        const nextZoom = cz >= 3 ? 1 : cz + 1;
-        setZoom(nextZoom, spectrum);
-        showMessage(`Zoom x${nextZoom}`);
-        return;
-    }
-
-    // F10 - Cycle overlay mode
-    if (e.key === 'F10') {
-        e.preventDefault();
-        const overlaySelect = document.getElementById('overlaySelect');
-        const modes = ['normal', 'grid', 'box', 'screen', 'reveal', 'beam', 'beamscreen', 'noattr', 'nobitmap'];
-        const curIdx = modes.indexOf(overlaySelect.value);
-        const nextIdx = (curIdx + 1) % modes.length;
-        overlaySelect.value = modes[nextIdx];
-        spectrum.setOverlayMode(modes[nextIdx]);
-        spectrum.redraw();
-        showMessage(`Overlay: ${overlaySelect.options[overlaySelect.selectedIndex].text}`);
         return;
     }
 
@@ -2057,89 +1724,43 @@ document.addEventListener('keydown', (e) => {
 // 26. File drop / file input
 // ═════════════════════════════════════════════════════════════════════
 
-const loadResultDeps = {
-    cancelAutoLoad: () => cancelAutoLoad(spectrum),
-    updateRZXStatus,
-    updateTapePosition, buildTapeCatalog, buildDiskCatalog,
-    updateMediaIndicator,
-    labelManager, regionManager, commentManager, xrefManager,
-    operandFormatManager, subroutineManager, updateXrefStats,
-    chkAutoLoad: document.getElementById('chkAutoLoad'),
-    startAutoLoadTape: (isTzx) => startAutoLoadTape(isTzx, spectrum, showMessage),
-    startAutoLoadDisk: () => startAutoLoadDisk(spectrum),
-    startAutoLoadPlus3Disk: () => startAutoLoadPlus3Disk(spectrum),
-    loadRomsForMachineType, openDebuggerPanel,
-    updateDebugger, updateStatus,
-    updateCanvasSize: () => updateCanvasSize(spectrum)
-};
-
-const zipSelectionDeps = {
-    handleLoadResultFn: (result, fileName) => handleLoadResult(result, fileName, spectrum, showMessage, loadResultDeps),
-    handleDiskInsertedFn: (result, fileName) => handleDiskInserted(result, fileName, spectrum, showMessage,
-        (r, fn) => handleLoadResult(r, fn, spectrum, showMessage, loadResultDeps)),
-    loadRomsForMachineType,
-    updateCanvasSize: () => updateCanvasSize(spectrum),
-    applyPalette: (id) => applyPalette(id, spectrum),
-    paletteSelect,
-    buildDiskCatalog
-};
-
-async function loadFileIntoEmulator(file) {
-    await initAudioOnUserGesture(spectrum);
-    try {
-        const driveIndex = getSelectedDriveIndex();
-        const result = await spectrum.loadFile(file, driveIndex);
-
-        // Update canvas sizes after loading (machine type change may affect dimensions)
-        updateCanvasSize(spectrum);
-
-        if (result.needsSelection) {
-            showZipSelection(result, file.name, spectrum, showMessage, zipSelectionDeps);
-        } else if (result.diskInserted) {
-            handleDiskInserted(result, file.name, spectrum, showMessage,
-                (r, fn) => handleLoadResult(r, fn, spectrum, showMessage, loadResultDeps));
-        } else {
-            handleLoadResult(result, file.name, spectrum, showMessage, loadResultDeps);
-        }
-    } catch (e) {
-        showMessage(e.message, 'error');
-    }
-}
-
 fileInput.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    await loadFileIntoEmulator(file);
+    await initAudioOnUserGesture(spectrum);
+    const data = await file.arrayBuffer();
+    handleLoadResult(data, file.name, {
+        spectrum, showMessage, updateDebugger, updateStatus,
+        machineSelect, updateCanvasSize: () => updateCanvasSize(spectrum),
+        applyRomsToEmulator, loadRomsForMachineType,
+        updateBetaDiskStatus, setupDiskActivityCallback,
+        applyPalette: (id) => applyPalette(id, spectrum),
+        updateULAplusStatus: () => updateULAplusStatus(spectrum),
+        updateGraphicsViewer, showZipSelection
+    });
     fileInput.value = '';
 });
 
-// Drag and drop (document-level, shows drop zone overlay)
-const romModal = document.getElementById('romModal');
-function isAssemblerTabActive() {
-    const btn = document.querySelector('.tab-btn[data-tab="assembler"]');
-    return btn && btn.classList.contains('active');
-}
-
-document.addEventListener('dragover', (e) => {
+// Drag and drop
+dropZone.addEventListener('dragover', (e) => { e.preventDefault(); e.stopPropagation(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', async (e) => {
     e.preventDefault();
-    if (!romModal.classList.contains('hidden')) return;
-    if (isAssemblerTabActive()) return;
-    dropZone.classList.add('active');
-});
-
-document.addEventListener('dragleave', (e) => {
-    if (e.target === dropZone) dropZone.classList.remove('active');
-});
-
-document.addEventListener('drop', async (e) => {
-    e.preventDefault();
-    dropZone.classList.remove('active');
-    if (!romModal.classList.contains('hidden')) return;
-    if (isAssemblerTabActive()) return;
-
+    e.stopPropagation();
+    dropZone.classList.remove('drag-over');
     const file = e.dataTransfer.files[0];
     if (!file) return;
-    await loadFileIntoEmulator(file);
+    await initAudioOnUserGesture(spectrum);
+    const data = await file.arrayBuffer();
+    handleLoadResult(data, file.name, {
+        spectrum, showMessage, updateDebugger, updateStatus,
+        machineSelect, updateCanvasSize: () => updateCanvasSize(spectrum),
+        applyRomsToEmulator, loadRomsForMachineType,
+        updateBetaDiskStatus, setupDiskActivityCallback,
+        applyPalette: (id) => applyPalette(id, spectrum),
+        updateULAplusStatus: () => updateULAplusStatus(spectrum),
+        updateGraphicsViewer, showZipSelection
+    });
 });
 
 // ═════════════════════════════════════════════════════════════════════
