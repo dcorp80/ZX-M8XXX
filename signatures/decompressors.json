@@ -1,0 +1,182 @@
+{
+    "id": "decompressors",
+    "name": "Decompressor Routines",
+    "type": "system",
+    "source": "Common Z80 decompressor signatures (ZX0, ZX1, ZX7, MegaLZ, Exomizer, LZ48, LZ49, Pletter, Bitbuster, LZSA, Shrinkler)",
+    "baseAddress": 0,
+    "machineType": null,
+    "anchors": [
+        {
+            "address": 0, "label": "decompress_zx0_std",
+            "bytes": [1, 255, 255, 197, 3, 62, 128],
+            "mask": null,
+            "comment": "ZX0 v2 standard (68B) — LD BC,$FFFF / PUSH BC / INC BC / LD A,$80. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_zx0_turbo",
+            "bytes": [1, 255, 255, 237, 67, 0, 0, 3, 62, 128, 24, 0, 14, 254, 135],
+            "mask": [255, 255, 255, 255, 255, 0, 0, 255, 255, 255, 255, 0, 255, 255, 255],
+            "comment": "ZX0 v2 turbo (126B) — LD BC,$FFFF / LD (nn),BC / INC BC / LD A,$80 / JR / LD C,$FE / ADD A,A. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_zx0_turbo_back",
+            "bytes": [1, 1, 0, 237, 67, 0, 0, 62, 128, 24],
+            "mask": [255, 255, 255, 255, 255, 0, 0, 255, 255, 255],
+            "comment": "ZX0 v2 turbo backward (126B) — LD BC,1 / LD (nn),BC / LD A,$80 / JR. Entry: HL=src end, DE=dst end"
+        },
+        {
+            "address": 0, "label": "decompress_zx0_fast",
+            "bytes": [221, 33, 0, 0, 1, 255, 255, 237, 67],
+            "mask": [255, 255, 0, 0, 255, 255, 255, 255, 255],
+            "comment": "ZX0 v2 fast (187B) — LD IX,nn / LD BC,$FFFF / LD (nn),BC. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_zx0_fast_v1",
+            "bytes": [55, 8, 221, 33, 0, 0, 1, 255, 255, 237, 67],
+            "mask": [255, 255, 255, 255, 0, 0, 255, 255, 255, 255, 255],
+            "comment": "ZX0 v1 fast (191B) — SCF / EX AF,AF' / LD IX,nn / LD BC,$FFFF / LD (nn),BC. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_zx0_mega",
+            "bytes": [1, 255, 255, 237, 67, 0, 0, 3, 24, 0, 14, 254, 135],
+            "mask": [255, 255, 255, 255, 255, 0, 0, 255, 255, 0, 255, 255, 255],
+            "comment": "ZX0 v2 mega (673B) — LD BC,$FFFF / LD (nn),BC / INC BC / JR / LD C,$FE / ADD A,A. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_zx0_mega_back",
+            "bytes": [1, 1, 0, 237, 67, 0, 0, 24],
+            "mask": [255, 255, 255, 255, 255, 0, 0, 255],
+            "comment": "ZX0 v2 mega backward (676B) — LD BC,1 / LD (nn),BC / JR. Entry: HL=src end, DE=dst end"
+        },
+        {
+            "address": 0, "label": "decompress_zx0_back",
+            "bytes": [1, 1, 0, 197, 62, 128],
+            "mask": null,
+            "comment": "ZX0 v2 standard backward (69B) — LD BC,1 / PUSH BC / LD A,$80. Entry: HL=src end, DE=dst end. Note: also matches ZX1 backward (same opening)"
+        },
+        {
+            "address": 0, "label": "decompress_zx1_std",
+            "bytes": [1, 255, 255, 197, 62, 128, 205],
+            "mask": [255, 255, 255, 255, 255, 255, 255],
+            "comment": "ZX1 standard (68B) — LD BC,$FFFF / PUSH BC / LD A,$80 / CALL. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_zx1_turbo",
+            "bytes": [1, 255, 255, 237, 67, 0, 0, 3, 62, 128, 24, 0, 5, 78, 35],
+            "mask": [255, 255, 255, 255, 255, 0, 0, 255, 255, 255, 255, 0, 255, 255, 255],
+            "comment": "ZX1 turbo (128B) — LD BC,$FFFF / LD (nn),BC / INC BC / LD A,$80 / JR / DEC B / LD C,(HL) / INC HL. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_zx1_mega",
+            "bytes": [1, 255, 255, 237, 67, 0, 0, 3, 24, 0, 5, 78, 35],
+            "mask": [255, 255, 255, 255, 255, 0, 0, 255, 255, 0, 255, 255, 255],
+            "comment": "ZX1 mega (406B) — LD BC,$FFFF / LD (nn),BC / INC BC / JR / DEC B / LD C,(HL) / INC HL. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_zx1_back",
+            "bytes": [1, 1, 0, 197, 62, 128, 205, 0, 0, 237, 184],
+            "mask": [255, 255, 255, 255, 255, 255, 255, 0, 0, 255, 255],
+            "comment": "ZX1 standard backward (68B) — LD BC,1 / PUSH BC / LD A,$80 / CALL / LDDR. Entry: HL=src end, DE=dst end"
+        },
+        {
+            "address": 0, "label": "decompress_zx1_turbo_back",
+            "bytes": [1, 1, 0, 237, 67, 0, 0, 13, 62, 128, 24],
+            "mask": [255, 255, 255, 255, 255, 0, 0, 255, 255, 255, 255],
+            "comment": "ZX1 turbo backward (128B) — LD BC,1 / LD (nn),BC / DEC C / LD A,$80 / JR. Entry: HL=src end, DE=dst end"
+        },
+        {
+            "address": 0, "label": "decompress_zx1_mega_back",
+            "bytes": [1, 1, 0, 237, 67, 0, 0, 13, 24],
+            "mask": [255, 255, 255, 255, 255, 0, 0, 255, 255],
+            "comment": "ZX1 mega backward (406B) — LD BC,1 / LD (nn),BC / DEC C / JR. Entry: HL=src end, DE=dst end"
+        },
+        {
+            "address": 0, "label": "decompress_zx7_std",
+            "bytes": [62, 128, 237, 160, 205, 0, 0, 48],
+            "mask": [255, 255, 255, 255, 255, 0, 0, 255],
+            "comment": "ZX7 standard (69B) — LD A,$80 / LDI / CALL getbit / JR NC. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_zx7_turbo",
+            "bytes": [62, 128, 237, 160, 135, 204, 0, 0, 48],
+            "mask": [255, 255, 255, 255, 255, 255, 0, 0, 255],
+            "comment": "ZX7 turbo (88B) — LD A,$80 / LDI / ADD A,A / CALL Z,getbit / JR NC. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_zx7b_slow",
+            "bytes": [1, 0, 128, 120, 12, 237, 168, 205],
+            "mask": [255, 255, 255, 255, 255, 255, 255, 255],
+            "comment": "ZX7B backward slow (64B) — LD BC,$8000 / LD A,B / INC C / LDD / CALL getbit. Entry: HL=src end, DE=dst end"
+        },
+        {
+            "address": 0, "label": "decompress_zx7b_medium",
+            "bytes": [1, 0, 128, 120, 12, 237, 168, 135, 204],
+            "mask": [255, 255, 255, 255, 255, 255, 255, 255, 255],
+            "comment": "ZX7B backward medium (67B) — LD BC,$8000 / LD A,B / INC C / LDD / ADD A,A / CALL Z. Entry: HL=src end, DE=dst end"
+        },
+        {
+            "address": 0, "label": "decompress_zx7b_fast",
+            "bytes": [62, 128, 237, 168, 135, 40, 0, 56],
+            "mask": [255, 255, 255, 255, 255, 255, 0, 255],
+            "comment": "ZX7B backward fast (191B) — LD A,$80 / LDD / ADD A,A / JR Z / JR C. Entry: HL=src end, DE=dst end"
+        },
+        {
+            "address": 0, "label": "decompress_megalz",
+            "bytes": [62, 128, 8, 1, 255, 2, 8],
+            "mask": null,
+            "comment": "MegaLZ V4 (110B) — LD A,$80 / EX AF,AF' / LD BC,$02FF / EX AF,AF'. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_exomizer",
+            "bytes": [253, 33, 0, 0, 126, 35, 6, 52, 213, 191],
+            "mask": [255, 255, 0, 0, 255, 255, 255, 255, 255, 255],
+            "comment": "Exomizer 2 (169B+156B buf) — LD IY,buf+11 / LD A,(HL) / INC HL / LD B,52 / PUSH DE / CP A. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_lz48",
+            "bytes": [237, 160, 6, 0, 126, 35, 254, 16, 56],
+            "mask": [255, 255, 255, 255, 255, 255, 255, 255, 255],
+            "comment": "LZ48 (83B) — LDI / LD B,0 / LD A,(HL) / INC HL / CP $10 / JR C. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_lz49",
+            "bytes": [237, 160, 6, 0, 126, 35, 221, 111, 230, 112],
+            "mask": null,
+            "comment": "LZ49 (~90B) — LDI / LD B,0 / LD A,(HL) / INC HL / LD IXL,A / AND $70. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_pletter",
+            "bytes": [126, 35, 217, 17, 0, 0, 135, 60, 203, 19, 135, 203, 19, 135, 203, 19, 203, 19],
+            "mask": null,
+            "comment": "Pletter 0.5c (~112B) — LD A,(HL) / INC HL / EXX / LD DE,0 / ADD A,A / INC A / RL E x4. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_bitbuster",
+            "bytes": [35, 35, 35, 35, 62, 128, 217, 17, 1, 0, 217],
+            "mask": null,
+            "comment": "Bitbuster 1.2 (~172B) — INC HL x4 (skip header) / LD A,$80 / EXX / LD DE,1 / EXX. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_lzsa1",
+            "bytes": [6, 0, 126, 35, 245, 230, 112, 40],
+            "mask": [255, 255, 255, 255, 255, 255, 255, 255],
+            "comment": "LZSA1 (67B) — LD B,0 / LD A,(HL) / INC HL / PUSH AF / AND $70 / JR Z. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_lzsa2",
+            "bytes": [175, 71, 8, 24],
+            "mask": [255, 255, 255, 255],
+            "comment": "LZSA2 (134B) — XOR A / LD B,A / EX AF,AF' / JR ReadToken. Entry: HL=src, DE=dst"
+        },
+        {
+            "address": 0, "label": "decompress_shrinkler",
+            "bytes": [217, 33, 0, 10, 1, 128, 10, 175, 37, 119, 44, 32],
+            "mask": [255, 255, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255],
+            "comment": "Shrinkler (212B) — EXX / LD HL,$0A00 / LD BC,$0A80 / XOR A / DEC H / LD (HL),A / INC L / JR NZ. Entry: IX=src, DE=dst"
+        }
+    ],
+    "labels": {},
+    "regions": [],
+    "comments": {},
+    "stats": { "labels": 0, "regions": 0, "comments": 0, "anchors": 28 }
+}

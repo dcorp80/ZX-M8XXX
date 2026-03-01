@@ -1,6 +1,6 @@
 # ZX-M8XXX
 
-**Version 0.9.31** | [Changelog](CHANGELOG.md)
+**Version 0.9.37** | [Changelog](CHANGELOG.md)
 
 ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integrated debugger designed for reverse engineering and development. No build tools, no dependencies - just open `index.html` in your browser.
 
@@ -60,6 +60,7 @@ ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator with an integr
 - Programmer Calculator (hex/dec/oct/bin)
 - Compare Tool (snapshots, binaries, emulator state)
 - Explorer (TAP, TZX, SNA, Z80, SZX, RZX, TRD, SCL, DSK, ZIP — BASIC decoder, disassembly, hex dump)
+- Game Mapper (capture rooms, stitch into navigable map grid, blend screenshots, save/load JSON, export PNG)
 - Z80 Opcodes reference
 
 ## Quick Start

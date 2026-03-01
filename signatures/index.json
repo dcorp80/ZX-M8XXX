@@ -2,6 +2,22 @@
     "version": 2,
     "packs": [
         {
+            "id": "system-patterns",
+            "file": "system_patterns.json",
+            "type": "system",
+            "enabled": true,
+            "name": "Common Z80 Patterns",
+            "description": "Delay loops, CLS, IM 2 setup, ROM loader, sprite routines, frame sync — common idioms found in many programs"
+        },
+        {
+            "id": "decompressors",
+            "file": "decompressors.json",
+            "type": "system",
+            "enabled": true,
+            "name": "Decompressor Routines",
+            "description": "ZX0, ZX1, ZX7, MegaLZ, Exomizer, LZ48, LZ49, Pletter, Bitbuster, LZSA, Shrinkler — 28 signatures"
+        },
+        {
             "id": "rom-48k",
             "file": "rom_48k.json",
             "type": "engine",

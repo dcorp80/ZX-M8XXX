@@ -1,0 +1,80 @@
+{
+    "id": "system-patterns",
+    "name": "Common Z80 Patterns",
+    "type": "system",
+    "source": "Well-known Z80 idioms",
+    "baseAddress": 0,
+    "machineType": null,
+    "anchors": [
+        {
+            "address": 0, "label": "delay_djnz",
+            "bytes": [6, 0, 16, 254],
+            "mask": [255, 0, 255, 255],
+            "comment": "LD B,n / DJNZ $"
+        },
+        {
+            "address": 0, "label": "delay_bc_v1",
+            "bytes": [1, 0, 0, 11, 120, 177, 32, 250],
+            "mask": [255, 0, 0, 255, 255, 255, 255, 255],
+            "comment": "LD BC,nn / DEC BC / LD A,B / OR C / JR NZ,$-4"
+        },
+        {
+            "address": 0, "label": "delay_bc_v2",
+            "bytes": [1, 0, 0, 11, 121, 176, 32, 250],
+            "mask": [255, 0, 0, 255, 255, 255, 255, 255],
+            "comment": "LD BC,nn / DEC BC / LD A,C / OR B / JR NZ,$-4"
+        },
+        {
+            "address": 0, "label": "im2_setup",
+            "bytes": [62, 0, 237, 71, 237, 94, 251],
+            "mask": [255, 0, 255, 255, 255, 255, 255],
+            "comment": "LD A,n / LD I,A / IM 2 / EI"
+        },
+        {
+            "address": 0, "label": "cls_ldir",
+            "bytes": [33, 0, 64, 17, 1, 64, 1, 255, 23, 54, 0, 237, 176],
+            "mask": null,
+            "comment": "LD HL,$4000 / LD DE,$4001 / LD BC,$17FF / LD (HL),0 / LDIR"
+        },
+        {
+            "address": 0, "label": "cls_attr",
+            "bytes": [33, 0, 88, 17, 1, 88, 1, 255, 2, 54, 0, 237, 176],
+            "mask": [255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 255, 255],
+            "comment": "LD HL,$5800 / LD DE,$5801 / LD BC,$02FF / LD (HL),attr / LDIR"
+        },
+        {
+            "address": 0, "label": "di_halt",
+            "bytes": [243, 118],
+            "mask": null,
+            "comment": "DI / HALT — wait for interrupt with interrupts disabled (frame sync)"
+        },
+        {
+            "address": 0, "label": "rom_load_edge",
+            "bytes": [4, 200, 62, 127, 219, 254, 31, 208, 169, 230, 32, 40, 243],
+            "mask": null,
+            "comment": "ROM tape loader edge loop (LD-SAMPLE) — INC B / RET Z / LD A,$7F / IN A,($FE) / RRA / RET NC / XOR C / AND $20 / JR Z,$-13"
+        },
+        {
+            "address": 0, "label": "next_screen_line",
+            "bytes": [36, 124, 230, 7, 32, 0, 125, 198, 32, 111, 56, 0, 124, 214, 8, 103],
+            "mask": [255, 255, 255, 255, 255, 0, 255, 255, 255, 255, 255, 0, 255, 255, 255, 255],
+            "comment": "INC H / LD A,H / AND 7 / JR NZ,+n / LD A,L / ADD A,32 / LD L,A / JR C,+n / LD A,H / SUB 8 / LD H,A — Spectrum screen line advance"
+        },
+        {
+            "address": 0, "label": "masked_sprite_col",
+            "bytes": [26, 166, 35, 182, 18],
+            "mask": null,
+            "comment": "LD A,(DE) / AND (HL) / INC HL / OR (HL) / LD (DE),A — masked sprite column write"
+        },
+        {
+            "address": 0, "label": "xor_sprite_col",
+            "bytes": [26, 174, 18],
+            "mask": null,
+            "comment": "LD A,(DE) / XOR (HL) / LD (DE),A — XOR sprite column write"
+        }
+    ],
+    "labels": {},
+    "regions": [],
+    "comments": {},
+    "stats": { "labels": 0, "regions": 0, "comments": 0, "anchors": 12 }
+}

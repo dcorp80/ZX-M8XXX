@@ -2,6 +2,63 @@
 
 All notable changes to ZX-M8XXX are documented in this file.
 
+## v0.9.37
+- **POKE Manager**: New "Pokes" tab in the debugger panel for managing named pokes (multi-address byte patches with on/off toggle) and memory value editors. Load poke definitions from external JSON files — patches use compact `[addr, normal, poke]` arrays with `$hex`, `0xhex`, or decimal formats. Each poke stores original and patched byte values — toggling a poke instantly writes to memory via checkbox, and disabling restores the original values. Memory editors provide live byte/word read and write with hex input. Poke state (entries, editors, enabled flags) persists in project save/load.
+- **POKE Manager CRUD**: Two-column layout with editors on the left and pokes on the right. Inline add/delete for both: poke add form accepts name, address, original value, and poke value — entering the same name adds a patch to the existing poke (multi-patch building). Editor add form accepts name, address, and byte/word type. Remove entries with × button (pokes restore original bytes if enabled). Master checkbox toggles all pokes on/off (indeterminate state when partially enabled). Editor values apply immediately on Enter or blur — accept `$hex`, `0xhex`, or decimal input. Single Read button refreshes all editors from memory. Save exports all pokes and editors to JSON. Load/Save/Clear buttons grouped at top right. Click game name label to edit.
+- **Game Mapper**: New "Mapper" sub-tab in Tools for capturing game screens and stitching rooms into a navigable map grid. Capture the current screen (or a configurable sub-region) into the current room slot, navigate with arrow buttons to adjacent rooms, and build up a full map. Supports multiple screenshots per room with thumbnail selection, pixel-averaging blend mode, and a zoomable overview canvas with click-to-select navigation and hover popup preview. Multi-floor support for games with vertical layers (floor navigation via toolbar or Ctrl+PgUp/PgDn). Separate horizontal and vertical room gap settings for flexible spacing. PNG export with composite grid layouts (N×... columns or ...×N rows) or separate files per floor; configurable floor gap for composite exports; empty floors are automatically skipped. Save/load map data as JSON. Keyboard shortcuts: Ctrl+Space (capture), Ctrl+Arrows (navigate rooms), Ctrl+PgUp/PgDn (change floor). Compact toolbar with collapsible settings panel for metadata and export options.
+- **Mapper Stamp tool**: Stamp regions from individual screenshots onto the blended image to correct blend artifacts (e.g. animated objects removed by mode algorithm). Select a source screenshot thumbnail, click Stamp, drag a rectangle in the dialog to copy those pixels onto the blend. Multiple stamps per room, persisted in save/load, re-applied on re-blend. Clear stamps to revert to pure mode blend. Escape closes the dialog.
+- **Mapper popup zoom**: Room hover popup in the overview canvas now displays at 2x zoom for better visibility.
+- **POKE Search rewrite**: Snap-based architecture — take multiple snapshots at different game states, then search to find addresses matching a pattern across all snaps. Every snap-to-snap transition is validated (no deduplication). More snaps = fewer candidates. Removed progressive narrowing; each search scans all RAM from scratch using the full snapshot history.
+  - **Snap counter**: Status line shows `(snaps: N)` and `(snaps: N, M candidates)` after search
+  - **Value filter**: Enter a hex value and click Filter to keep only candidates where current memory matches that value. Reversible: clear the value and click Filter to undo. Re-filtering with a different value works from the original search results.
+  - **Value history tooltip**: Hover over a result to see values at every snap point (e.g. "05 → 04 → 03 → 02")
+  - **Skip screen**: Checkbox (on by default) excludes screen memory (4000-5BFF), reducing false positives
+  - Removed "Equals" search mode (incompatible with snap-based architecture)
+- **Mapper overview zoom**: Zoom selector in settings — Fit (auto-scale to container, default), x1 (native pixel size), x2 (double). x1 and x2 enable scrolling when the map exceeds the container. Follow option auto-scrolls to the current room in x1/x2 mode. Persisted in save/load.
+- **Mapper region lock**: Capture region controls (X, Y, W, H) are disabled once any screenshot exists, preventing dimension mismatches between existing captures and new ones. Clear the map to unlock.
+- **Memory dump: Break on read/write**: Right-click context menu on memory bytes now includes "Break on read", "Break on write", and "Break on R/W" options to quickly set watchpoint-style breakpoints. Supports single address or drag-selected range.
+- **Mapper Room Mark**: Mark rooms with a colored diagonal cross (X) overlay to flag rooms needing attention. Choose from all 8 ZX Spectrum colors via a toolbar dropdown. Marks appear in the overview canvas, hover popup, and PNG export. Persisted in save/load JSON.
+- **Game Mapper**: Optimized layout — reduced top padding and eliminated empty space below the overview container.
+- **Fixed**: Mapper stamp dialog now saves and restores scroll position, so the overview doesn't jump when closing the dialog.
+- **Fixed**: Mapper room hover popup now positions correctly in x1/x2 zoom modes, accounting for container scroll offset so the popup never appears off-screen.
+- **Fixed**: Breakpoints list scrollbar no longer overlaps remove buttons — uses thin custom scrollbar with right padding for clearance.
+- **Fixed**: Memory dump context menu now repositions when it would overflow the viewport, ensuring all options remain accessible when right-clicking near the bottom or right edge of the screen.
+- **Fixed**: Memory dump byte editing in first column — clicking the first byte of a line now correctly enters edit mode instead of selecting the address field.
+
+## v0.9.36
+- **UI: Tests layout redesign**: Test list table columns are now compact (no stretched empty space). Preview and comparison images moved to the right side panel. Test result details (e.g. "Step 2, frame 1035: 228 pixels differ") integrated directly into the test list as a Details column. Summary stats (passed/failed/skipped/time/fps) moved to the top bar. Removed separate Results Summary section at the bottom. Increased test list height to show ~20 rows.
+- **Fixed**: Beta Disk not working in autotests when switching to Pentagon. `setMachineType()` updated `profile` but not `betaDiskEnabled`, so disk I/O ports were inactive despite TR-DOS booting successfully ("No disk" error). Now enables Beta Disk automatically when switching to Pentagon/Scorpion.
+- **Fixed**: ULAplus state leaking between autotests. `setMachineType()` carried runtime `ulaplus.enabled` from the old ULA to the new one, so a test with `ulaplus: true` could pollute subsequent tests via machine switches in the finally block. Now reads the user's persistent setting from localStorage instead of runtime state.
+- **Fixed**: INT pulse timing for HALT-to-interrupt transition (HALT2INT test now passes)
+- **Fixed**: Late timing offset correctly applied to INT pulse window (48K only)
+- **Fixed**: HALT NOP contention — HALT NOPs at contended addresses now apply per-access memory contention (M1 fetch from PC+1), matching real Z80 hardware behavior
+
+## v0.9.35
+- **Hotspot detection**: Profiler now tracks per-PC T-state consumption during profiling. After completion, identifies small address ranges consuming disproportionate CPU time (>1% of total). Classifies hotspots as delay loops (`delay_djnz`, `delay_bc`), block operations (`block_ldir`, `block_lddr`), I/O operations (`io_poll`, `io_block`), frame sync (`frame_sync`), or generic hotspots. Results displayed as clickable rows in Analysis card showing percentage, address, classification, and size. Click navigates to hotspot address.
+- **System signature pack**: New built-in "Common Z80 Patterns" signature pack (`signatures/system_patterns.json`) with well-known Z80 byte patterns that can appear at any address: DJNZ delay, DEC BC delay, IM 2 setup, CLS LDIR, CLS attributes, DI/HALT frame sync, ROM tape loader edge loop, screen line advance, masked/XOR sprite column. Uses `type: "system"` with each anchor placed directly at its found address. Enabled by default in Settings → Signatures.
+- **Decompressor signature pack**: New built-in "Decompressor Routines" pack (`signatures/decompressors.json`) with 28 byte-pattern signatures for common Z80 decompressors: ZX0 (standard/turbo/fast/mega, each with backward variant, plus v1 fast), ZX1 (standard/turbo/mega, each with backward variant), ZX7 (standard/turbo), ZX7B backward (slow/medium/fast), MegaLZ V4, Exomizer 2, LZ48, LZ49, Pletter 0.5c, Bitbuster 1.2, LZSA1, LZSA2, Shrinkler. Scan Memory finds decompressor routines at any address and labels them (e.g. `decompress_zx0_std`). Enabled by default.
+
+## v0.9.34
+- **Runtime behavior profiler**: New "Profile" tool in Analysis card (Tools tab). Runs the emulator for N frames (default 200), tracks per-subroutine behavior (port I/O, screen access, call patterns), and generates descriptive labels. Replaces generic `sub_XXXX` names with labels like `read_keyboard`, `draw_sprite`, `play_music`, `main_loop`. Preserves user-named labels. Profiled labels tagged with "P" badge and `source: 'profiler'` for filtering. IM 2 support: detects interrupt mode 2 handler address (`isr_handler_im2`) and marks the vector table at I×256 as a DW data region (`im2_vector_table`).
+- **Label source filter**: New dropdown in Labels panel replaces the ROM checkbox. Filter by All / User / Profiled / ROM. Label counts shown per category (e.g. "12 user, 8 profiled, 85 rom").
+- **Page-aware label resolution**: Disassembly view now resolves labels using the current memory page (ROM bank, RAM bank). Paged labels from profiler and other sources now appear correctly in disasm and operands on 128K/Pentagon/Scorpion machines.
+- **Label click navigation**: Clicking a label in the Labels panel navigates to that address — prefers disasm view, falls back to memory view.
+- **Fix call stack overflow**: Calls panel now has a max height (200px) with scrollbar, preventing UI layout breakage from deep call stacks.
+
+## v0.9.33
+- **Tape & disk breakpoint triggers**: Three new trigger types in the unified breakpoint system:
+  - **Tape Block**: Break after N tape blocks loaded (flash load or real-time playback). Use skip count to set the block threshold.
+  - **Disk Read**: Break after N disk sector reads from any controller (TR-DOS WD1793 or +3DOS µPD765).
+  - **Disk Sector**: Break on a specific track:sector read. Enter as TT:SS (e.g. 0:1 for track 0, sector 1). Works with both TR-DOS and +3DOS.
+
+## v0.9.32
+- **Mouse wheel direction swap**: New "Swap Wheel" checkbox in Settings → Input inverts Kempston Mouse wheel direction.
+- **Persistent input settings**: Kempston joystick, extended buttons, gamepad, mouse, wheel, swap L/R, and swap wheel settings are now saved to localStorage and restored on reload.
+- **Swap L/R default**: Mouse button swap is now checked by default.
+- **Screen info popup**: Bitmap rows now show memory addresses. Removed "multicolor" label from attribute display.
+- **Fix call stack crash**: Guard against undefined `_debugCallStack` during early initialization.
+- **UI: Settings reorganization**: Beta Disk checkbox moved from Input to Machines tab. ROMs button removed from Media tab (already in Machines). GitHub button tooltip updated to list all supported formats.
+
 ## v0.9.31
 - **Fix WD1793 Lost Data simulation**: Games that issue Read Sector and only poll the system register ($FF) for INTRQ — without reading data from port $7F — now work correctly. On real WD1793 hardware, data bytes arrive at disk rotation speed and are "lost" if not read; after all bytes pass, INTRQ fires. M8XXX's instant-completion model lacked this, causing infinite loops in games like Merged on Pentagon 128.
   - Tracks consecutive system register polls without data reads (`_sysReadsSinceData` counter)

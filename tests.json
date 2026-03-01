@@ -53,6 +53,7 @@
             "category": "video",
             "file": "tests/scroll17.zip",
             "zipEntry": "scroll17.tap",
+            "earlyTimings": true,
             "machine": "128k",
             "palette": "default",
             "enabled": true,
@@ -70,6 +71,7 @@
             "category": "ulaplus",
             "file": "tests/HAM256ViewerV0.3.tap.zip",
             "zipEntry": "HAM256.tap",
+            "earlyTimings": true,
             "machine": "48k",
             "palette": "default",
             "ulaplus": true,
@@ -87,6 +89,7 @@
             "category": "ulaplus",
             "file": "tests/ULAplusDemo.tap.zip",
             "zipEntry": "Multicolour.tap",
+            "earlyTimings": true,
             "machine": "48k",
             "palette": "default",
             "ulaplus": true,
@@ -309,7 +312,27 @@
             "source": "",
             "steps": [
                 { "frames": 500, "screen": "tests/global_test_1.0b_412.png", "keys": "SPACE,200ms,SPACE,500ms,Q,Q,Q,SPACE" },
-                { "frames": 1035, "screen": "tests/global_test_1.0b_1035.png", "keys": "SPACE" }
+                { "frames": 1875, "screen": "tests/global_test_1.0b_1875.png", "keys": "SPACE" }
+            ]
+        },
+
+        {
+            "id": "Another Universal Memory Test",
+            "name": "Another Universal Memory Test",
+            "category": "cpu",
+            "file": "tests/AUMT.zip",
+            "zipEntry": "AUMT.SCL",
+            "diskRun": "AUMT",
+            "machine": "pentagon1024",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": true,
+            "author": "DDp",
+            "source": "",
+            "steps": [
+                { "frames": 67, "screen": "tests/Another Universal Memory Test_67.png"},
+                { "frames": 240, "screen": "tests/Another Universal Memory Test_240.png", "keys": "1" },
+                { "frames": 2480, "screen": "tests/Another Universal Memory Test_2480.png", "keys": "ENTER"}
             ]
         },
 
@@ -342,37 +365,6 @@
             "source": "",
             "steps": [
                 { "frames": 786, "screen": "tests/cpd-128k.png" }
-            ]
-        },
-
-        {
-            "id": "halt2int early",
-            "name": "HALT2INT early",
-            "category": "cpu",
-            "file": "tests/halt2int.tap",
-            "machine": "48k",
-            "earlyTimings": true,
-            "palette": "default",
-            "enabled": false,
-            "author": "Woodmass, Mark",
-            "source": "https://github.com/redcode/Z80/wiki/HALT2INT",
-            "steps": [
-                { "frames": 100, "screen": "tests/halt2int_early.png" }
-            ]
-        },
-        {
-            "id": "halt2int late",
-            "name": "HALT2INT late",
-            "category": "cpu",
-            "file": "tests/halt2int.tap",
-            "machine": "48k",
-            "earlyTimings": false,
-            "palette": "default",
-            "enabled": false,
-            "author": "Woodmass, Mark",
-            "source": "https://github.com/redcode/Z80/wiki/HALT2INT",
-            "steps": [
-                { "frames": 100, "screen": "tests/halt2int_late.png" }
             ]
         },
 
@@ -558,6 +550,39 @@
                 { "frames": 700000, "screen": "tests/zexdoc_4.png" },
                 { "frames": 750000, "screen": "tests/zexdoc_5.png" }
             ]
+        },
+
+
+        {
+            "id": "halt2int early",
+            "name": "HALT2INT early",
+            "category": "cpu",
+            "file": "tests/halt2int.tap",
+            "machine": "48k",
+            "earlyTimings": true,
+            "palette": "default",
+            "enabled": false,
+            "author": "Woodmass, Mark",
+            "source": "https://github.com/redcode/Z80/wiki/HALT2INT",
+            "steps": [
+                { "frames": 100, "screen": "tests/halt2int_early.png" }
+            ]
+        },
+        {
+            "id": "halt2int late",
+            "name": "HALT2INT late",
+            "category": "cpu",
+            "file": "tests/halt2int.tap",
+            "machine": "48k",
+            "earlyTimings": false,
+            "palette": "default",
+            "enabled": false,
+            "author": "Woodmass, Mark",
+            "source": "https://github.com/redcode/Z80/wiki/HALT2INT",
+            "steps": [
+                { "frames": 100, "screen": "tests/halt2int_late.png" }
+            ]
         }
+
     ]
 }
