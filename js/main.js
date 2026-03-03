@@ -138,6 +138,7 @@ import { initInputHandler, updateMouseStatus, updateGamepadStatus } from './app/
 import { initCanvasRenderer } from './app/canvas-renderer.js';
 import { initOverlayRenderer } from './app/overlay-renderer.js';
 import { initRunLoop } from './app/run-loop.js';
+import { AudioManager } from './app/audio-output.js';
 import {
     initAudioOnUserGesture, toggleSound, updateSoundButtons,
     toggleFullscreen, applyFullscreenScale, restoreCanvasSize,
@@ -336,8 +337,30 @@ spectrum.onOverlayModeChanged = (mode) => overlayRenderer.setMode(mode);
 const runLoop = initRunLoop(spectrum);
 spectrum.onStarted = () => runLoop.startScheduling();
 spectrum.onStopped = () => runLoop.stopScheduling();
-spectrum.onSpeedChanged = () => runLoop.restartScheduling();
+spectrum.onSpeedChanged = (speed) => {
+    runLoop.restartScheduling();
+    // Suspend audio at high speed to save CPU, resume at normal speed
+    if (spectrum.audio && spectrum.audio.context) {
+        if (speed === 0 || speed > 200) {
+            spectrum.audio.context.suspend();
+        } else if (spectrum.audio.context.state === 'suspended') {
+            spectrum.audio.context.resume();
+        }
+    }
+};
 spectrum._getFps = () => runLoop.getFps();
+
+// Host-side audio (Phase 6: audio extracted from kernel)
+spectrum.initAudio = () => {
+    if (!spectrum.audio) {
+        const audio = new AudioManager(spectrum.ay, spectrum.timing);
+        spectrum.audio = audio;
+        spectrum.onAudioFrame = (tstates, beeperChanges, beeperLevel, tapeAudioChanges) => {
+            audio.processFrame(tstates, beeperChanges, beeperLevel, tapeAudioChanges);
+        };
+    }
+    return spectrum.audio;
+};
 
 // Wrap media-io functions that take spectrum as a parameter
 const updateMediaIndicator = (name, type, driveIdx) => _updateMediaIndicator(name, type, driveIdx, spectrum);
@@ -1650,6 +1673,18 @@ machineSelect.addEventListener('change', () => {
     spectrum.updateBetaDiskPagingFlag();
     updateBetaDiskStatus(spectrum);
     setupDiskActivityCallback(spectrum);
+
+    // Recreate AudioManager with new timing (CPU clock may differ between machines)
+    if (spectrum.audio) {
+        const wasMuted = spectrum.audio.muted;
+        const oldVolume = spectrum.audio.volume;
+        spectrum.audio.stop();
+        spectrum.audio = null;
+        spectrum.initAudio();
+        spectrum.audio.setVolume(oldVolume);
+        spectrum.audio.setMuted(wasMuted);
+        spectrum.audio.start();
+    }
 
     if (wasRunning) spectrum.start();
     else spectrum.runFrame();
