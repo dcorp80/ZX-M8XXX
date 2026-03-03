@@ -1062,7 +1062,7 @@ class TestRunner {
         for (let f = 0; f < framesToRun; f++) {
             if (this.aborted) return { passed: false, error: 'Aborted' };
 
-            const tstates = this.spectrum.runFrameHeadless();
+            const tstates = this.spectrum.runFrame();
             this.totalTstates += tstates;
             this.totalFrames++;
 
@@ -1096,7 +1096,7 @@ class TestRunner {
         // Compare screen if specified
         if (step.screen) {
             // Render final frame for comparison
-            const frameBuffer = this.spectrum.renderAndCaptureScreen();
+            const frameBuffer = this.spectrum.getFrameBuffer();
             const dims = this.spectrum.getScreenDimensions();
 
             // Create ImageData from frame buffer
@@ -1141,7 +1141,7 @@ class TestRunner {
                 const ms = parseInt(delayMatch[1]);
                 const frames = Math.ceil(ms / 20); // ~50fps
                 for (let f = 0; f < frames; f++) {
-                    this.spectrum.runFrameHeadless();
+                    this.spectrum.runFrame();
                 }
                 continue;
             }
@@ -1156,7 +1156,7 @@ class TestRunner {
 
             // Hold for a few frames
             for (let f = 0; f < 5; f++) {
-                this.spectrum.runFrameHeadless();
+                this.spectrum.runFrame();
             }
 
             // Release all keys
@@ -1165,7 +1165,7 @@ class TestRunner {
             }
 
             // Wait a frame after release
-            this.spectrum.runFrameHeadless();
+            this.spectrum.runFrame();
         }
     }
 
@@ -1430,8 +1430,8 @@ class TestRunner {
 
                 // Update canvas every 2 frames for performance
                 if (this.previewFrameCount % 2 === 0) {
-                    // Use renderAndCaptureScreen for consistent border rendering
-                    const frameBuffer = this.spectrum.renderAndCaptureScreen();
+                    // Get frame buffer for consistent border rendering
+                    const frameBuffer = this.spectrum.getFrameBuffer();
                     const imageData = new ImageData(
                         new Uint8ClampedArray(frameBuffer),
                         dims.width,
