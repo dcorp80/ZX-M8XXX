@@ -4,7 +4,7 @@
  * This separates DOM/Canvas concerns from the emulation kernel (spectrum.js).
  */
 
-export function initCanvasRenderer(canvas, overlayCanvas, spectrum) {
+export function initCanvasRenderer(canvas, spectrum, overlayRenderer) {
     const ctx = canvas.getContext('2d');
     const dims = spectrum.getScreenDimensions();
     canvas.width = dims.width;
@@ -14,7 +14,7 @@ export function initCanvasRenderer(canvas, overlayCanvas, spectrum) {
     function render(frameBuffer) {
         imageData.data.set(frameBuffer);
         ctx.putImageData(imageData, 0, 0);
-        spectrum.drawOverlay();  // Overlays stay in spectrum for now (extracted in Phase 4)
+        overlayRenderer.drawOverlay();
     }
 
     function resize() {

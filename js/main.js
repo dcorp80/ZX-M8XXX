@@ -136,6 +136,7 @@ import {
 } from './app/emulator-control.js';
 import { initInputHandler, updateMouseStatus, updateGamepadStatus } from './app/input-handler.js';
 import { initCanvasRenderer } from './app/canvas-renderer.js';
+import { initOverlayRenderer } from './app/overlay-renderer.js';
 import {
     initAudioOnUserGesture, toggleSound, updateSoundButtons,
     toggleFullscreen, applyFullscreenScale, restoreCanvasSize,
@@ -306,15 +307,29 @@ const chkShowTstates    = document.getElementById('chkShowTstates');
 const savedMachineType = localStorage.getItem('zx-machine-type') || '48k';
 let spectrum = new Spectrum(canvas, {
     machineType: savedMachineType,
-    tapeTrapsEnabled: true,
-    overlayCanvas: overlayCanvas
+    tapeTrapsEnabled: true
 });
 window.spectrum = spectrum;
 
+// Host-side overlay rendering (Phase 4: overlays extracted from kernel)
+const overlayRenderer = initOverlayRenderer(overlayCanvas, spectrum);
+
 // Host-side canvas rendering (Phase 1: decouple canvas from kernel)
-const renderer = initCanvasRenderer(canvas, overlayCanvas, spectrum);
-spectrum.onRender = renderer.render;
-spectrum.onDisplayDimensionsChanged = renderer.resize;
+const renderer = initCanvasRenderer(canvas, spectrum, overlayRenderer);
+spectrum.onRender = (frameBuffer) => {
+    overlayRenderer.processFrame(frameBuffer, overlayRenderer.isBeamMode());
+    renderer.render(frameBuffer);
+};
+spectrum.onDisplayDimensionsChanged = () => {
+    renderer.resize();
+    overlayRenderer.onDisplayDimensionsChanged();
+};
+spectrum.getDisplayFlags = () => ({
+    isBorderOnly: overlayRenderer.isBorderOnly(),
+    isBeamMode: overlayRenderer.isBeamMode()
+});
+spectrum.onZoomChanged = (z) => overlayRenderer.setZoomLevel(z);
+spectrum.onOverlayModeChanged = (mode) => overlayRenderer.setMode(mode);
 
 // Wrap media-io functions that take spectrum as a parameter
 const updateMediaIndicator = (name, type, driveIdx) => _updateMediaIndicator(name, type, driveIdx, spectrum);
@@ -1745,7 +1760,7 @@ themeToggle.addEventListener('click', () => {
 // Overlay display mode
 const overlaySelect = document.getElementById('overlaySelect');
 overlaySelect.addEventListener('change', () => {
-    spectrum.setOverlayMode(overlaySelect.value);
+    overlayRenderer.setMode(overlaySelect.value);
     spectrum.redraw();
 });
 
@@ -2019,7 +2034,7 @@ document.addEventListener('keydown', (e) => {
         const curIdx = modes.indexOf(overlaySelect.value);
         const nextIdx = (curIdx + 1) % modes.length;
         overlaySelect.value = modes[nextIdx];
-        spectrum.setOverlayMode(modes[nextIdx]);
+        overlayRenderer.setMode(modes[nextIdx]);
         spectrum.redraw();
         showMessage(`Overlay: ${overlaySelect.options[overlaySelect.selectedIndex].text}`);
         return;
