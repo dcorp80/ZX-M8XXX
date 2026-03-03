@@ -137,6 +137,7 @@ import {
 import { initInputHandler, updateMouseStatus, updateGamepadStatus } from './app/input-handler.js';
 import { initCanvasRenderer } from './app/canvas-renderer.js';
 import { initOverlayRenderer } from './app/overlay-renderer.js';
+import { initRunLoop } from './app/run-loop.js';
 import {
     initAudioOnUserGesture, toggleSound, updateSoundButtons,
     toggleFullscreen, applyFullscreenScale, restoreCanvasSize,
@@ -330,6 +331,13 @@ spectrum.getDisplayFlags = () => ({
 });
 spectrum.onZoomChanged = (z) => overlayRenderer.setZoomLevel(z);
 spectrum.onOverlayModeChanged = (mode) => overlayRenderer.setMode(mode);
+
+// Host-side run loop (Phase 5: scheduling extracted from kernel)
+const runLoop = initRunLoop(spectrum);
+spectrum.onStarted = () => runLoop.startScheduling();
+spectrum.onStopped = () => runLoop.stopScheduling();
+spectrum.onSpeedChanged = () => runLoop.restartScheduling();
+spectrum._getFps = () => runLoop.getFps();
 
 // Wrap media-io functions that take spectrum as a parameter
 const updateMediaIndicator = (name, type, driveIdx) => _updateMediaIndicator(name, type, driveIdx, spectrum);

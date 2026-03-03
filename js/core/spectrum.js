@@ -91,12 +91,9 @@ export class Spectrum {
         this.cpu.portWrite = this.portWrite.bind(this);
         
         this.timing = this.ula.getTiming();
-        this.frameInterval = null;
         this.running = false;
-        this.lastFrameTime = 0;
         this.frameCount = 0;
         this.totalFrames = 0;       // Monotonic frame counter (never reset, for port I/O log)
-        this.actualFps = 0;
         
         this.updateDisplayDimensions();
 
@@ -116,7 +113,6 @@ export class Spectrum {
         
         // Speed control (100 = normal, 0 = max)
         this.speed = 100;
-        this.rafId = null;
 
         // Late timing model (affects ULA timing including INT, floating bus, contention)
         // Early = cold ULA, Late = warm ULA
@@ -2041,7 +2037,7 @@ export class Spectrum {
             this._bpTStatesResetPending = false;
         }
 
-        // If forcing, ensure we're stopped first to clear any stale timers
+        // If forcing, ensure we're stopped first
         if (force && this.running) {
             this.stop();
         }
@@ -2051,107 +2047,20 @@ export class Spectrum {
         }
 
         this.running = true;
-        this.lastFrameTime = performance.now();
-        this.lastRafTime = null;  // Reset for accurate frame timing
         this.frameCount = 0;
 
-        this.scheduleNextFrame();
+        if (this.onStarted) this.onStarted();
     }
-    
-    scheduleNextFrame() {
-        if (!this.running) return;
 
-        if (this.speed === 0) {
-            // Max speed - use requestAnimationFrame, run multiple frames
-            this.rafId = requestAnimationFrame(() => {
-                try {
-                    const startTime = performance.now();
-                    // Run frames for up to 16ms (one display frame)
-                    while (performance.now() - startTime < 16 && this.running) {
-                        this.runFrame();
-                    }
-                    this.updateFps();
-                    this.scheduleNextFrame();
-                } catch (e) {
-                    console.error('Error in runFrame:', e);
-                    this.running = false;
-                    if (this.onError) this.onError(e);
-                }
-            });
-        } else if (this.speed >= 100) {
-            // Normal or fast - use requestAnimationFrame with time tracking
-            // Real Spectrum: 50.08 FPS (69888 T-states at 3.5MHz)
-            const targetFrameTime = 1000 / 50.08 * (100 / this.speed);
-
-            this.rafId = requestAnimationFrame((timestamp) => {
-                try {
-                    if (!this.lastRafTime) this.lastRafTime = timestamp;
-
-                    // Calculate how many frames we should have run
-                    const elapsed = timestamp - this.lastRafTime;
-                    const framesToRun = Math.floor(elapsed / targetFrameTime);
-
-                    if (framesToRun > 0) {
-                        // Run the appropriate number of frames (cap at 4 to prevent spiral)
-                        const actualFrames = Math.min(framesToRun, 4);
-                        for (let i = 0; i < actualFrames && this.running; i++) {
-                            this.runFrame();
-                        }
-                        this.lastRafTime = timestamp - (elapsed % targetFrameTime);
-                    }
-
-                    this.updateFps();
-                    this.scheduleNextFrame();
-                } catch (e) {
-                    console.error('Error in runFrame:', e);
-                    this.running = false;
-                    if (this.onError) this.onError(e);
-                }
-            });
-        } else {
-            // Slow - increase interval
-            const interval = Math.round(20 * (100 / this.speed));
-            this.frameInterval = setTimeout(() => {
-                try {
-                    this.runFrame();
-                    this.updateFps();
-                    this.scheduleNextFrame();
-                } catch (e) {
-                    console.error('Error in runFrame:', e);
-                    this.running = false;
-                    if (this.onError) this.onError(e);
-                }
-            }, interval);
-        }
-    }
-    
-    updateFps() {
-        const now = performance.now();
-        if (now - this.lastFrameTime >= 1000) {
-            this.actualFps = Math.round(this.frameCount * 1000 / (now - this.lastFrameTime));
-            this.frameCount = 0;
-            this.lastFrameTime = now;
-        }
-    }
-    
     stop() {
         if (!this.running) return;
         this.running = false;
-        if (this.frameInterval) {
-            clearTimeout(this.frameInterval);
-            this.frameInterval = null;
-        }
-        if (this.rafId) {
-            cancelAnimationFrame(this.rafId);
-            this.rafId = null;
-        }
-        // Keep keyboard handlers registered - user may type while paused
+        if (this.onStopped) this.onStopped();
     }
-    
+
     setSpeed(speed) {
         const wasHighSpeed = this.speed > 200;
         this.speed = speed;
-        this.lastRafTime = null;  // Reset for new timing
 
         // Suspend audio at high speeds (> 200% or max speed)
         if (this.audio && this.audio.context) {
@@ -2163,26 +2072,18 @@ export class Spectrum {
         }
 
         // Suppress tape audio briefly when returning from high speed
-        // This prevents hearing unexpected loading sounds when game is loaded at max speed
         if (wasHighSpeed && speed > 0 && speed <= 200) {
-            this._suppressTapeAudioUntil = Date.now() + 1000;  // 1 second grace period
+            this._suppressTapeAudioUntil = Date.now() + 1000;
         }
 
-        // Restart timing if running
-        if (this.running) {
-            if (this.frameInterval) {
-                clearTimeout(this.frameInterval);
-                this.frameInterval = null;
-            }
-            if (this.rafId) {
-                cancelAnimationFrame(this.rafId);
-                this.rafId = null;
-            }
-            this.scheduleNextFrame();
-        }
+        if (this.onSpeedChanged) this.onSpeedChanged();
     }
-    
+
     toggle() { this.running ? this.stop() : this.start(); }
+
+    getFps() {
+        return this._getFps ? this._getFps() : 0;
+    }
 
     // Beta Disk automatic ROM paging
     // Update cached flag for Beta Disk paging (call when conditions change)
@@ -4972,7 +4873,7 @@ export class Spectrum {
             },
             memory: this.memory.getPagingState(),
             ula: { border: this.ula.borderColor, flash: this.ula.flashState },
-            running: this.running, fps: this.actualFps
+            running: this.running, fps: this.getFps()
         };
     }
     
@@ -6065,7 +5966,6 @@ export class Spectrum {
 
     // ========== Utility ==========
 
-    getFps() { return this.actualFps; }
     isRunning() { return this.running; }
 
     // ========== Audio ==========
