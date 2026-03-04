@@ -30,9 +30,7 @@ import {
 } from './constants.js';
 
 export class Spectrum {
-    constructor(canvas, options = {}) {
-        this.canvas = canvas;
-        this.ctx = canvas.getContext('2d');
+    constructor(options = {}) {
         this.machineType = options.machineType || '48k';
         this.profile = getMachineProfile(this.machineType);
         this.tapeTrapsEnabled = options.tapeTrapsEnabled !== false;
@@ -1910,7 +1908,8 @@ export class Spectrum {
 
         // Audio processing — host handles actual audio output via callback
         if (this.onAudioFrame && this.speed > 0 && this.speed <= 200) {
-            const tapeAudioSuppressed = this._suppressTapeAudioUntil && Date.now() < this._suppressTapeAudioUntil;
+            const tapeAudioSuppressed = this._suppressTapeAudioFrames > 0;
+            if (tapeAudioSuppressed) this._suppressTapeAudioFrames--;
             const tapeAudioChanges = (this.tapeAudioEnabled && !this.tapeFlashLoad &&
                 this.tapePlayer.isPlaying() && !tapeAudioSuppressed)
                 ? this.tapePlayer.getEdgeTransitions() : [];
@@ -2059,7 +2058,7 @@ export class Spectrum {
 
         // Suppress tape audio briefly when returning from high speed
         if (wasHighSpeed && speed > 0 && speed <= 200) {
-            this._suppressTapeAudioUntil = Date.now() + 1000;
+            this._suppressTapeAudioFrames = 50;  // ~1 second at 50Hz
         }
 
         if (this.onSpeedChanged) this.onSpeedChanged(speed);
@@ -4868,7 +4867,7 @@ export class Spectrum {
 
     // ========== Machine Type ==========
 
-    setMachineType(type, preserveRom = false) {
+    setMachineType(type, preserveRom = false, options = {}) {
         const wasRunning = this.running;
         if (wasRunning) this.stop();
 
@@ -4882,9 +4881,8 @@ export class Spectrum {
         const oldFullBorderMode = this.ula ? this.ula.fullBorderMode : false;
         const oldPalette = this.ula ? this.ula.palette : null;
         const oldPaletteId = this.ula ? this.ula.paletteId : null;
-        // Use persistent setting, not runtime state (which may be modified by test runner)
-        const ulaplusSetting = typeof localStorage !== 'undefined'
-            ? localStorage.getItem('zxm8_ulaplus') === 'true' : false;
+        // ULAplus enabled state — provided by host (not stored in kernel)
+        const ulaplusSetting = options.ulaplusEnabled || false;
 
         this.machineType = type;
         this.profile = getMachineProfile(type);
@@ -5470,29 +5468,6 @@ export class Spectrum {
         }
     }
 
-    /**
-     * Download recorded RZX as a file
-     * @param {string} filename - Optional filename (default: recording.rzx)
-     */
-    rzxDownloadRecording(filename = 'recording.rzx') {
-        const data = this.rzxSaveRecording();
-        if (!data) {
-            console.warn('No RZX data to download');
-            return;
-        }
-
-        const blob = new Blob([data], { type: 'application/octet-stream' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-
-        console.log(`[RZX REC] Downloaded ${filename} (${data.length} bytes)`);
-    }
 
     /**
      * Analyze RZX file structure (for debugging)
@@ -5831,6 +5806,7 @@ export class Spectrum {
             skipRom = true,
             isDataRegion = null,
             onProgress = null,
+            onYield = null,
             maxInstructions = 100000
         } = options;
 
@@ -5852,7 +5828,7 @@ export class Spectrum {
 
         const disasm = new Disassembler(this.memory);
         let processed = 0;
-        let lastYield = Date.now();
+        let sinceLastYield = 0;
 
         while (queue.length > 0) {
             if (processed >= maxInstructions) {
@@ -5935,12 +5911,12 @@ export class Spectrum {
                     pc = (pc + result.length) & 0xFFFF;
                 }
 
-                // Yield to UI every 20ms
-                const now = Date.now();
-                if (now - lastYield >= 20) {
+                // Yield periodically (every ~1000 instructions)
+                sinceLastYield++;
+                if (sinceLastYield >= 1000) {
+                    sinceLastYield = 0;
                     if (onProgress) onProgress(processed, queue.length);
-                    await new Promise(r => setTimeout(r, 0));
-                    lastYield = Date.now();
+                    if (onYield) await onYield();
                 }
             }
         }

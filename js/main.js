@@ -307,7 +307,7 @@ const chkShowTstates    = document.getElementById('chkShowTstates');
 // ═════════════════════════════════════════════════════════════════════
 
 const savedMachineType = localStorage.getItem('zx-machine-type') || '48k';
-let spectrum = new Spectrum(canvas, {
+let spectrum = new Spectrum({
     machineType: savedMachineType,
     tapeTrapsEnabled: true
 });
@@ -1658,7 +1658,9 @@ machineSelect.addEventListener('change', () => {
     const wasRunning = spectrum.isRunning();
     if (wasRunning) spectrum.stop();
 
-    spectrum.setMachineType(type);
+    spectrum.setMachineType(type, false, {
+        ulaplusEnabled: localStorage.getItem('zxm8_ulaplus') === 'true'
+    });
     localStorage.setItem('zx-machine-type', type);
     applyRomsToEmulator(spectrum);
     spectrum.ula.setBorderPreset(borderSizeSelect.value);

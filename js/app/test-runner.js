@@ -884,6 +884,24 @@ class TestRunner {
             return !isAborted();
         };
 
+        // Helper to press key with Caps Shift (for uppercase letters inside strings)
+        const pressWithCaps = async (key, holdFrames = 15, releaseFrames = 10) => {
+            if (isAborted()) return false;
+            ula.keyDown('Control');
+            ula.keyDown(key);
+            for (let i = 0; i < holdFrames; i++) {
+                this.spectrum.runFrame();
+            }
+            ula.keyUp(key);
+            ula.keyUp('Control');
+            for (let i = 0; i < releaseFrames; i++) {
+                this.spectrum.runFrame();
+            }
+            ula.keyboardState.fill(0xFF);
+            await new Promise(r => setTimeout(r, 0));
+            return !isAborted();
+        };
+
         // Helper to press key with Symbol Shift
         const pressWithSymbol = async (key, holdFrames = 15, releaseFrames = 10) => {
             if (isAborted()) return false;
@@ -914,17 +932,26 @@ class TestRunner {
             if (!await pressWithSymbol('p')) return;
 
             // Type filename characters
+            // Inside quotes (L mode), letters are lowercase by default;
+            // Caps Shift + letter gives uppercase (needed for TR-DOS filenames)
             for (const ch of diskRun) {
                 if (isAborted()) return;
                 const lower = ch.toLowerCase();
                 if (lower >= 'a' && lower <= 'z') {
-                    if (!await pressKey(lower)) return;
+                    const isUpper = ch >= 'A' && ch <= 'Z';
+                    if (isUpper) {
+                        if (!await pressWithCaps(lower)) return;
+                    } else {
+                        if (!await pressKey(lower)) return;
+                    }
                 } else if (lower >= '0' && lower <= '9') {
                     if (!await pressKey(lower)) return;
-                } else if (lower === '.') {
+                } else if (ch === '.') {
                     if (!await pressWithSymbol('m')) return;
-                } else if (lower === ' ') {
+                } else if (ch === ' ') {
                     if (!await pressKey(' ')) return;
+                } else if (ch === '=') {
+                    if (!await pressWithSymbol('l')) return;
                 }
             }
 
