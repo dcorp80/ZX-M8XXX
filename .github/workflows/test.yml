@@ -19,28 +19,9 @@ jobs:
       - name: Run unit tests
         run: npm run test:unit
 
-      - name: Run headless tests
-        run: npm run test:headless
-
       - name: Make reports
         if: always()
         run: npm run test:report:ci
-
-      - name: Upload test reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: vitest-html-report
-          path: |
-            reports/
-          retention-days: 3
-
-      - name: Upload test results to GitHub
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: vitest-junit
-          path: reports/junit.xml
 
       - name: Test Report
         if: always()

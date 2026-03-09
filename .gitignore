@@ -1,5 +1,7 @@
 # ROMs
 roms/*
+!roms/.gitkeep
+!roms/README.md
 
 # Claude
 CLAUDE.md

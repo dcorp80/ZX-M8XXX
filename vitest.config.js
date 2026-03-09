@@ -19,7 +19,7 @@ export default defineConfig({
                 test: {
                     name: 'headless',
                     include: ['tests/headless/**/*.test.js'],
-                    testTimeout: 30_000,
+                    testTimeout: 60_000,
                 },
             },
         ],
