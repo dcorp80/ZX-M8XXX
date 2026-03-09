@@ -7,6 +7,7 @@ CLAUDE.md
 
 # Reports
 reports/
+.vitest-reports
 
 # Dependencies
 node_modules/
