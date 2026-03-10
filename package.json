@@ -1,25 +1,33 @@
 {
-  "name": "zx-m8xxx",
-  "version": "0.9.31",
-  "description": "ZX-M8XXX (ZX Matrix) is a vanilla JavaScript ZX Spectrum emulator",
+  "name": "zx-m8xxx-ladder",
+  "version": "0.1.0",
+  "description": "ZX Spectrum emulator and debugger for the browser, forked from Bedazzle's ZX-M8XXX",
   "keywords": [
     "zx-spectrum",
     "emulator",
-    "8-bit",
+    "debugger",
     "z80",
+    "8-bit",
     "retro-computing",
-    "home-computer"
+    "reverse-engineering"
   ],
-  "homepage": "https://github.com/dcorp80/ZX-M8XXX#readme",
+  "homepage": "https://github.com/dcorp80/ZX-M8XXX-ladder#readme",
   "bugs": {
-    "url": "https://github.com/dcorp80/ZX-M8XXX/issues"
+    "url": "https://github.com/dcorp80/ZX-M8XXX-ladder/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dcorp80/ZX-M8XXX.git"
+    "url": "git+https://github.com/dcorp80/ZX-M8XXX-ladder.git",
+    "directory": "."
+  },
+  "upstream": {
+    "name": "Bedazzle/ZX-M8XXX",
+    "url": "https://github.com/Bedazzle/ZX-M8XXX",
+    "baseline": "v0.9.37"
   },
   "license": "GPL-3.0",
-  "author": "",
+  "author": "Bedazzle (upstream: ZX-M8XXX)",
+  "contributors": [],
   "type": "module",
   "main": "index.html",
   "private": true,
