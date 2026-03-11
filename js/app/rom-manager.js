@@ -431,7 +431,7 @@ export function initializeEmulator(spectrum, showMessage) {
 }
 
 // ROM Modal event handlers
-export function initRomModalHandlers(spectrum, showMessage) {
+export function initRomModalHandlers({ spectrum, showMessage } = {}) {
     const romModal = document.getElementById('romModal');
     const btnSelect48Rom = document.getElementById('btnSelect48Rom');
     const btnSelect128Rom = document.getElementById('btnSelect128Rom');

@@ -16,6 +16,7 @@ let downloadFile = null;
 let updateDebugger = null;
 let updateLabelsList = null;
 let goToAddress = null;
+let goToMemoryAddress = null;
 let labelManager = null;
 let regionManager = null;
 let subroutineManager = null;
@@ -1943,7 +1944,130 @@ export function updateTraceStopAfter() {
 
 let memmapViewMode = 'regions'; // 'regions' or 'heatmap'
 let memmapBankMode = '64k'; // '64k' or '128k'
+
+// Memory Map Dialog — lazy-resolved because Svelte renders these after init
+let memmapDialog, memmapCanvas, memmapCtx, memmapTooltip, memmapStats, memmapBar, memmapAddrInfo;
+function ensureMemmapElements() {
+    if (memmapCtx) return true;
+    memmapDialog = document.getElementById('memmapDialog');
+    memmapCanvas = document.getElementById('memmapCanvas');
+    memmapCtx = memmapCanvas ? memmapCanvas.getContext('2d') : null;
+    memmapTooltip = document.getElementById('memmapTooltip');
+    memmapStats = document.getElementById('memmapStats');
+    memmapBar = document.getElementById('memmapBar');
+    memmapAddrInfo = document.getElementById('memmapAddrInfo');
+    return !!memmapCtx;
+}
+
+const MEMMAP_COLORS = {
+    code: '#4080ff',
+    smc: '#ff4040',
+    db: '#ffcc00',
+    dw: '#ff8800',
+    text: '#40cc40',
+    graphics: '#cc40cc',
+    unmapped: '#606060',
+    zero: '#000000'
+};
+
+let btnMemmapRegions, btnMemmapHeatmap, memmapLegendRegions, memmapLegendHeatmap;
+let memmapBankToggle, btnMemmap64K, btnMemmap128K, memmapScale;
+let memmapEventsAttached = false;
+
+function ensureMemmapControls() {
+    if (btnMemmapRegions) return;
+    btnMemmapRegions = document.getElementById('btnMemmapRegions');
+    btnMemmapHeatmap = document.getElementById('btnMemmapHeatmap');
+    memmapLegendRegions = document.getElementById('memmapLegendRegions');
+    memmapLegendHeatmap = document.getElementById('memmapLegendHeatmap');
+    memmapBankToggle = document.getElementById('memmapBankToggle');
+    btnMemmap64K = document.getElementById('btnMemmap64K');
+    btnMemmap128K = document.getElementById('btnMemmap128K');
+    memmapScale = document.querySelector('.memmap-scale');
+}
+
+function attachMemmapEvents() {
+    if (memmapEventsAttached) return;
+    memmapEventsAttached = true;
+    ensureMemmapElements();
+    ensureMemmapControls();
+    btnMemmapRegions.addEventListener('click', () => setMemmapView('regions'));
+    btnMemmapHeatmap.addEventListener('click', () => setMemmapView('heatmap'));
+    btnMemmap64K.addEventListener('click', () => setMemmapBankMode('64k'));
+    btnMemmap128K.addEventListener('click', () => setMemmapBankMode('128k'));
+
+    memmapCanvas.addEventListener('mousemove', (e) => {
+        const addr = getAddrFromCanvasPos(e.clientX, e.clientY);
+        if (addr < 0) {
+            memmapTooltip.style.display = 'none';
+            return;
+        }
+
+        const val = spectrum.memory.read(addr);
+        const label = labelManager.get(addr);
+        let info, infoText;
+
+        if (memmapViewMode === 'heatmap' && heatmapData) {
+            const key = spectrum.getAutoMapKey(addr);
+            const execCount = heatmapData.executed.get(key) || 0;
+            const readCount = heatmapData.read.get(key) || 0;
+            const writeCount = heatmapData.written.get(key) || 0;
+
+            info = `${hex16(addr)}: E:${execCount} R:${readCount} W:${writeCount}`;
+            if (label) info += ` [${label.name}]`;
+
+            const addrHi = (addr >> 8).toString(16).toUpperCase().padStart(2, '0');
+            const addrLo = (addr & 0xFF).toString(16).toUpperCase().padStart(2, '0');
+            infoText = `Address: ${hex16(addr)} (${addrHi}xx + ${addrLo})\nValue: ${hex8(val)} (${val})`;
+            infoText += `\nExecuted: ${execCount.toLocaleString()} times`;
+            infoText += `\nRead: ${readCount.toLocaleString()} times`;
+            infoText += `\nWritten: ${writeCount.toLocaleString()} times`;
+            if (label) infoText += `\nLabel: ${label.name}`;
+        } else {
+            const region = regionManager.get(addr);
+            const type = region ? region.type : (val === 0 ? 'Zero' : 'Unmapped');
+
+            info = `${hex16(addr)}: ${hex8(val)} - ${type}`;
+            if (label) info += ` [${label.name}]`;
+
+            const addrHi = (addr >> 8).toString(16).toUpperCase().padStart(2, '0');
+            const addrLo = (addr & 0xFF).toString(16).toUpperCase().padStart(2, '0');
+            infoText = `Address: ${hex16(addr)} (${addrHi}xx + ${addrLo})\nValue: ${hex8(val)} (${val})\nType: ${type}`;
+            if (region && region.comment) infoText += `\n${region.comment}`;
+            if (label) infoText += `\nLabel: ${label.name}`;
+        }
+
+        memmapTooltip.textContent = info;
+        memmapTooltip.style.display = 'block';
+        memmapTooltip.style.left = (e.clientX - memmapCanvas.getBoundingClientRect().left + 10) + 'px';
+        memmapTooltip.style.top = (e.clientY - memmapCanvas.getBoundingClientRect().top - 20) + 'px';
+        memmapAddrInfo.textContent = infoText;
+    });
+
+    memmapCanvas.addEventListener('mouseleave', () => {
+        memmapTooltip.style.display = 'none';
+    });
+
+    memmapCanvas.addEventListener('click', (e) => {
+        const addr = getAddrFromCanvasPos(e.clientX, e.clientY);
+        if (addr >= 0) {
+            closeMemoryMap();
+            goToAddress(addr);
+            goToMemoryAddress(addr);
+            updateDebugger();
+        }
+    });
+
+    document.getElementById('btnMemmapClose').addEventListener('click', closeMemoryMap);
+    document.getElementById('btnExportAsm').addEventListener('click', exportDisassembly);
+
+    memmapDialog.addEventListener('click', (e) => {
+        if (e.target === memmapDialog) closeMemoryMap();
+    });
+}
+
 export function updateMemmapScale() {
+    ensureMemmapControls();
     const romLabel = document.getElementById('memmapRomLabel');
     const bankLabel = document.getElementById('memmapBankLabel');
     if (!spectrum) return;
@@ -1969,6 +2093,8 @@ export function updateMemmapScale() {
 }
 
 export function openMemoryMap() {
+    ensureMemmapElements();
+    attachMemmapEvents();
     memmapDialog.classList.remove('hidden');
     updateMemmapScale();
     renderCurrentMemmapView();
@@ -3423,6 +3549,7 @@ export function initAssemblerTab(deps) {
     updateDebugger = deps.updateDebugger;
     updateLabelsList = deps.updateLabelsList;
     goToAddress = deps.goToAddress;
+    goToMemoryAddress = deps.goToMemoryAddress;
     labelManager = deps.labelManager;
     regionManager = deps.regionManager;
     subroutineManager = deps.subroutineManager;
@@ -4775,128 +4902,12 @@ export function initAssemblerTab(deps) {
         }
     });
 
-    // Memory Map Dialog
-    const memmapDialog = document.getElementById('memmapDialog');
-    const memmapCanvas = document.getElementById('memmapCanvas');
-    const memmapCtx = memmapCanvas.getContext('2d');
-    const memmapTooltip = document.getElementById('memmapTooltip');
-    const memmapStats = document.getElementById('memmapStats');
-    const memmapBar = document.getElementById('memmapBar');
-    const memmapAddrInfo = document.getElementById('memmapAddrInfo');
-
-    const MEMMAP_COLORS = {
-        code: '#4080ff',
-        smc: '#ff4040',
-        db: '#ffcc00',
-        dw: '#ff8800',
-        text: '#40cc40',
-        graphics: '#cc40cc',
-        unmapped: '#606060',
-        zero: '#000000'
-    };
-
-    const btnMemmapRegions = document.getElementById('btnMemmapRegions');
-    const btnMemmapHeatmap = document.getElementById('btnMemmapHeatmap');
-    const memmapLegendRegions = document.getElementById('memmapLegendRegions');
-    const memmapLegendHeatmap = document.getElementById('memmapLegendHeatmap');
-    const memmapBankToggle = document.getElementById('memmapBankToggle');
-    const btnMemmap64K = document.getElementById('btnMemmap64K');
-    const btnMemmap128K = document.getElementById('btnMemmap128K');
-    const memmapScale = document.querySelector('.memmap-scale');
 
 
 
 
-
-
-
-    btnMemmapRegions.addEventListener('click', () => setMemmapView('regions'));
-    btnMemmapHeatmap.addEventListener('click', () => setMemmapView('heatmap'));
-    btnMemmap64K.addEventListener('click', () => setMemmapBankMode('64k'));
-    btnMemmap128K.addEventListener('click', () => setMemmapBankMode('128k'));
-
-
-
-    // Heatmap data for tooltip access
-
-
-    // 128K view: Show all 8 banks in a 2x4 grid with x2 horizontal scale
-
-
-    memmapCanvas.addEventListener('mousemove', (e) => {
-        const addr = getAddrFromCanvasPos(e.clientX, e.clientY);
-        if (addr < 0) {
-            memmapTooltip.style.display = 'none';
-            return;
-        }
-
-        const val = spectrum.memory.read(addr);
-        const label = labelManager.get(addr);
-        let info, infoText;
-
-        if (memmapViewMode === 'heatmap' && heatmapData) {
-            // Heatmap tooltip
-            const key = spectrum.getAutoMapKey(addr);
-            const execCount = heatmapData.executed.get(key) || 0;
-            const readCount = heatmapData.read.get(key) || 0;
-            const writeCount = heatmapData.written.get(key) || 0;
-
-            info = `${hex16(addr)}: E:${execCount} R:${readCount} W:${writeCount}`;
-            if (label) info += ` [${label.name}]`;
-
-            const addrHi = (addr >> 8).toString(16).toUpperCase().padStart(2, '0');
-            const addrLo = (addr & 0xFF).toString(16).toUpperCase().padStart(2, '0');
-            infoText = `Address: ${hex16(addr)} (${addrHi}xx + ${addrLo})\nValue: ${hex8(val)} (${val})`;
-            infoText += `\nExecuted: ${execCount.toLocaleString()} times`;
-            infoText += `\nRead: ${readCount.toLocaleString()} times`;
-            infoText += `\nWritten: ${writeCount.toLocaleString()} times`;
-            if (label) infoText += `\nLabel: ${label.name}`;
-        } else {
-            // Region tooltip
-            const region = regionManager.get(addr);
-            const type = region ? region.type : (val === 0 ? 'Zero' : 'Unmapped');
-
-            info = `${hex16(addr)}: ${hex8(val)} - ${type}`;
-            if (label) info += ` [${label.name}]`;
-
-            const addrHi = (addr >> 8).toString(16).toUpperCase().padStart(2, '0');
-            const addrLo = (addr & 0xFF).toString(16).toUpperCase().padStart(2, '0');
-            infoText = `Address: ${hex16(addr)} (${addrHi}xx + ${addrLo})\nValue: ${hex8(val)} (${val})\nType: ${type}`;
-            if (region && region.comment) infoText += `\n${region.comment}`;
-            if (label) infoText += `\nLabel: ${label.name}`;
-        }
-
-        memmapTooltip.textContent = info;
-        memmapTooltip.style.display = 'block';
-        memmapTooltip.style.left = (e.clientX - memmapCanvas.getBoundingClientRect().left + 10) + 'px';
-        memmapTooltip.style.top = (e.clientY - memmapCanvas.getBoundingClientRect().top - 20) + 'px';
-        memmapAddrInfo.textContent = infoText;
-    });
-
-    memmapCanvas.addEventListener('mouseleave', () => {
-        memmapTooltip.style.display = 'none';
-    });
-
-    memmapCanvas.addEventListener('click', (e) => {
-        const addr = getAddrFromCanvasPos(e.clientX, e.clientY);
-        if (addr >= 0) {
-            closeMemoryMap();
-            // Navigate disassembly (includes history)
-            goToAddress(addr);
-            // Navigate memory dump
-            goToMemoryAddress(addr);
-            updateDebugger();
-        }
-    });
-
+    // btnMemoryMap is in the debugger panel (not Svelte-owned), safe to bind eagerly
     document.getElementById('btnMemoryMap').addEventListener('click', openMemoryMap);
-    document.getElementById('btnMemmapClose').addEventListener('click', closeMemoryMap);
-    document.getElementById('btnExportAsm').addEventListener('click', exportDisassembly);
-
-    // Export disassembly as sjasmplus-compatible ASM file
-    memmapDialog.addEventListener('click', (e) => {
-        if (e.target === memmapDialog) closeMemoryMap();
-    });
 
     btnAutoMapApply.addEventListener('click', () => {
         const data = spectrum.getAutoMapData();

@@ -1,0 +1,91 @@
+        <div class="tab-content" id="tab-graphics">
+            <div class="graphics-container">
+                <div class="graphics-body">
+                    <div class="graphics-dump-wrap">
+                        <canvas id="gfxDumpCanvas" class="graphics-dump-canvas"></canvas>
+                    </div>
+                    <div class="gfx-col-address">
+                        <div class="gfx-control-group">
+                            <label for="gfxAddress">Address</label>
+                            <input type="text" id="gfxAddress" value="3000" maxlength="4" title="Memory address in hex (Enter to apply)">
+                        </div>
+                        <div class="gfx-control-group">
+                            <span class="gfx-group-label">Navigate</span>
+                            <div class="gfx-nav-buttons">
+                                <button id="btnGfxByte1" title="Back 1 byte">-1</button>
+                                <button id="btnGfxByte2" title="Forward 1 byte">+1</button>
+                            </div>
+                            <div class="gfx-nav-buttons">
+                                <button id="btnGfxLine1" title="Back 1 line">-Line</button>
+                                <button id="btnGfxLine2" title="Forward 1 line">+Line</button>
+                            </div>
+                            <div class="gfx-nav-buttons">
+                                <button id="btnGfxRow1" title="Back 8 lines">-Row</button>
+                                <button id="btnGfxRow2" title="Forward 8 lines">+Row</button>
+                            </div>
+                            <div class="gfx-nav-buttons">
+                                <button id="btnGfxSprite1" title="Previous sprite">-Spr</button>
+                                <button id="btnGfxSprite2" title="Next sprite">+Spr</button>
+                            </div>
+                            <div class="gfx-nav-buttons">
+                                <button id="btnGfxPage1" title="Back 24 rows (192 lines)">-Page</button>
+                                <button id="btnGfxPage2" title="Forward 24 rows (192 lines)">+Page</button>
+                            </div>
+                        </div>
+                        <div class="gfx-control-group">
+                            <label for="gfxWidth">Width (bytes)</label>
+                            <div class="gfx-spinner">
+                                <button id="btnGfxWidthMin" title="Minimum width (1 byte)">|&lt;</button>
+                                <button id="btnGfxWidthDec" title="Decrease width">-</button>
+                                <input type="text" id="gfxWidth" value="24" maxlength="2" title="Sprite width in bytes (1-32)">
+                                <button id="btnGfxWidthInc" title="Increase width">+</button>
+                                <button id="btnGfxWidthMax" title="Maximum width (32 bytes)">&gt;|</button>
+                            </div>
+                        </div>
+                        <div class="gfx-control-group">
+                            <label for="gfxHeight">Height (lines)</label>
+                            <div class="gfx-spinner">
+                                <button id="btnGfxHeightDec8" title="Decrease height by 8 lines">-8</button>
+                                <button id="btnGfxHeightDec" title="Decrease height">-</button>
+                                <input type="text" id="gfxHeight" value="8" maxlength="2" title="Sprite height in lines (1-64)">
+                                <button id="btnGfxHeightInc" title="Increase height">+</button>
+                                <button id="btnGfxHeightInc8" title="Increase height by 8 lines">+8</button>
+                            </div>
+                        </div>
+                        <div class="gfx-control-group gfx-checkboxes">
+                            <label title="Invert colors (white on black)"><input type="checkbox" id="gfxInvert"> Invert</label>
+                            <label title="Show pixel grid overlay"><input type="checkbox" id="gfxGrid" checked> Grid</label>
+                            <label title="Character mode: 8x8 tiles stored sequentially"><input type="checkbox" id="gfxCharMode"> Char</label>
+                            <div class="gfx-zoom-inline">
+                                <label title="1:1 zoom"><input type="radio" name="gfxZoom" id="gfxZoom1" value="1"> x1</label>
+                                <label title="2:1 zoom"><input type="radio" name="gfxZoom" id="gfxZoom2" value="2" checked> x2</label>
+                                <label title="3:1 zoom"><input type="radio" name="gfxZoom" id="gfxZoom3" value="3"> x3</label>
+                            </div>
+                        </div>
+                        <div class="gfx-control-group">
+                            <span class="gfx-group-label">Preview</span>
+                            <div class="gfx-preview-wrap">
+                                <canvas id="gfxPreviewCanvas" class="gfx-preview-canvas"></canvas>
+                            </div>
+                            <div class="gfx-info" id="gfxInfo">0000h: 8x8</div>
+                        </div>
+                    </div>
+                    <div class="gfx-col-actions">
+                        <div class="gfx-control-group">
+                            <label for="gfxComment">Comment</label>
+                            <input type="text" id="gfxComment" placeholder="Sprite name..." maxlength="40" title="Label for the graphics region">
+                        </div>
+                        <div class="gfx-control-group gfx-actions">
+                            <button id="btnGfxMarkRegion" title="Mark selected area as graphics region">Mark</button>
+                            <button id="btnGfxCopyAsm" title="Copy selection as assembly DEFB statements">Copy</button>
+                            <button id="btnGfxSaveAsm" title="Save selection as .asm file">Save</button>
+                            <button id="btnGfxExportAll" title="Export all marked graphics regions">Export</button>
+                        </div>
+                        <div class="gfx-control-group gfx-actions">
+                            <button id="btnGfxGoDisasm" title="Go to address in Disassembler">→Disasm</button>
+                            <button id="btnGfxGoMem" title="Go to address in Memory view">→Memdump</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div><!-- tab-graphics -->

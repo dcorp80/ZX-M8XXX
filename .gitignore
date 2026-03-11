@@ -3,6 +3,9 @@ roms/*
 !roms/.gitkeep
 !roms/README.md
 
+# Build
+dist/
+
 # Claude
 CLAUDE.md
 .claude/

@@ -3,15 +3,6 @@
 
 export function initUIFramework(deps = {}) {
     const { getTestRunner, updateGraphicsViewer, updateTraceList } = deps;
-    // Help modal
-    const helpModal = document.getElementById('helpModal');
-    const btnHelpClose = document.getElementById('btnHelpClose');
-
-    btnHelpClose.addEventListener('click', () => helpModal.classList.add('hidden'));
-    helpModal.addEventListener('click', (e) => {
-        if (e.target === helpModal) helpModal.classList.add('hidden');
-    });
-
     // Full Help Dialog
     const fullHelpDialog = document.getElementById('fullHelpDialog');
     const btnHelpFull = document.getElementById('btnHelpFull');

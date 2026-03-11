@@ -640,6 +640,7 @@ initAssemblerTab({
     updateDebugger,
     updateLabelsList,
     goToAddress,
+    goToMemoryAddress,
     labelManager,
     regionManager,
     subroutineManager,
